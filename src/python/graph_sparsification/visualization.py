@@ -97,7 +97,7 @@ def plot_infection_comparison(prob_original, prob_sparse,
 
     fig, ax = plt.subplots(figsize=figsize)
 
-    ax.scatter(po, ps, alpha=0.3, s=10, edgecolors='none')
+    ax.scatter(po, ps, alpha=0.4, s=40, edgecolors='none')
     ax.plot([0, 1], [0, 1], 'r--', linewidth=1, label='y = x')
 
     ax.set_xlabel(f"{labels[0]} Node Infection Probability", fontsize=12)
@@ -153,7 +153,7 @@ def plot_multi_infection_comparison(prob_original, sparsified_probs,
         else:
             r2 = 0.0
 
-        ax.scatter(po_m, ps_m, alpha=0.3, s=10, edgecolors='none')
+        ax.scatter(po_m, ps_m, alpha=0.4, s=40, edgecolors='none')
         ax.plot([0, 1], [0, 1], 'r--', linewidth=1)
 
         ax.set_xlabel("Original Infection Prob.", fontsize=11)
