@@ -2,12 +2,136 @@
 
 import numpy as np
 from scipy import sparse
+from scipy.sparse.csgraph import laplacian
 import matplotlib.pyplot as plt
 from matplotlib.colors import LogNorm
 
 
+# ── Community detection (for plotting only) ───────────────────────────
+
+def detect_communities(W, n_clusters=None, max_clusters=10):
+    """Detect communities via spectral clustering on the graph Laplacian.
+
+    This is a lightweight, sklearn-free implementation used exclusively
+    for reordering nodes in adjacency-matrix plots.  It does NOT modify
+    the graph or any other data structure.
+
+    Parameters
+    ----------
+    W : scipy.sparse matrix
+        Weighted adjacency matrix (symmetric).
+    n_clusters : int or None
+        Number of communities.  If None, auto-selected by the largest
+        eigengap in the first *max_clusters* eigenvalues of the
+        normalized Laplacian.
+    max_clusters : int
+        Upper bound when auto-selecting the number of clusters.
+
+    Returns
+    -------
+    labels : np.ndarray of int, shape (n,)
+        Community assignment for each node.
+    """
+    W = sparse.csr_matrix(W, dtype=float)
+    n = W.shape[0]
+
+    if n <= 2:
+        return np.zeros(n, dtype=int)
+
+    # Normalized Laplacian: L_sym = D^{-1/2} L D^{-1/2}
+    degrees = np.array(W.sum(axis=1)).ravel()
+    degrees = np.maximum(degrees, 1e-12)  # avoid division by zero
+    D_inv_sqrt = sparse.diags(1.0 / np.sqrt(degrees))
+    L = laplacian(W, normed=False)
+    L_sym = D_inv_sqrt @ L @ D_inv_sqrt
+
+    # Compute a few smallest eigenvalues/vectors
+    k_compute = min(max_clusters + 1, n - 1)
+    if n <= 500:
+        # Dense eigen for small graphs
+        L_dense = L_sym.toarray() if sparse.issparse(L_sym) else L_sym
+        eigenvalues, eigenvectors = np.linalg.eigh(L_dense)
+        eigenvalues = eigenvalues[:k_compute]
+        eigenvectors = eigenvectors[:, :k_compute]
+    else:
+        from scipy.sparse.linalg import eigsh
+        eigenvalues, eigenvectors = eigsh(
+            L_sym, k=k_compute, which='SM', tol=1e-6)
+        order = np.argsort(eigenvalues)
+        eigenvalues = eigenvalues[order]
+        eigenvectors = eigenvectors[:, order]
+
+    # Auto-select k via largest eigengap
+    if n_clusters is None:
+        gaps = np.diff(eigenvalues[:max_clusters])
+        # Skip the first eigenvalue (always ~0); look at gaps[1:]
+        if len(gaps) > 1:
+            n_clusters = int(np.argmax(gaps[1:]) + 2)
+        else:
+            n_clusters = 2
+        n_clusters = max(2, min(n_clusters, max_clusters))
+
+    # Spectral embedding: first k eigenvectors (skip constant eigenvector)
+    X = eigenvectors[:, :n_clusters].copy()
+    # Row-normalize
+    norms = np.linalg.norm(X, axis=1, keepdims=True)
+    norms = np.maximum(norms, 1e-12)
+    X = X / norms
+
+    # K-means clustering (simple Lloyd's algorithm)
+    labels = _kmeans(X, n_clusters, max_iter=50, n_init=5)
+    return labels
+
+
+def _kmeans(X, k, max_iter=50, n_init=5):
+    """Minimal k-means (Lloyd's algorithm) for spectral clustering."""
+    n, d = X.shape
+    rng = np.random.default_rng(0)
+    best_labels = np.zeros(n, dtype=int)
+    best_inertia = np.inf
+
+    for _ in range(n_init):
+        # k-means++ initialization
+        centers = np.empty((k, d))
+        centers[0] = X[rng.integers(n)]
+        for c in range(1, k):
+            dists = np.min(
+                np.sum((X[:, None, :] - centers[None, :c, :]) ** 2, axis=2),
+                axis=1)
+            probs = dists / dists.sum()
+            centers[c] = X[rng.choice(n, p=probs)]
+
+        for _ in range(max_iter):
+            # Assign
+            dists = np.sum(
+                (X[:, None, :] - centers[None, :, :]) ** 2, axis=2)
+            labels = np.argmin(dists, axis=1)
+            # Update
+            new_centers = np.empty_like(centers)
+            for c in range(k):
+                members = X[labels == c]
+                if len(members) > 0:
+                    new_centers[c] = members.mean(axis=0)
+                else:
+                    new_centers[c] = X[rng.integers(n)]
+            if np.allclose(centers, new_centers):
+                break
+            centers = new_centers
+
+        inertia = sum(
+            np.sum((X[labels == c] - centers[c]) ** 2)
+            for c in range(k))
+        if inertia < best_inertia:
+            best_inertia = inertia
+            best_labels = labels.copy()
+
+    return best_labels
+
+
+# ── Adjacency matrix plots ────────────────────────────────────────────
+
 def plot_adjacency_comparison(W_original, W_sparse, labels=("Original", "Sparsified"),
-                              communities=None, figsize=(14, 6), log_scale=True):
+                              communities="auto", figsize=(14, 6), log_scale=True):
     """Plot adjacency matrices of two graphs side by side.
 
     Parameters
@@ -16,15 +140,21 @@ def plot_adjacency_comparison(W_original, W_sparse, labels=("Original", "Sparsif
         Adjacency matrices.
     labels : tuple of str
         Labels for the two graphs.
-    communities : array-like or None
+    communities : array-like, "auto", or None
         Community assignments for node reordering.
+        - ``"auto"``: detect communities via spectral clustering on
+          ``W_original`` (default).
+        - ``None``: no reordering.
+        - array-like: explicit community labels.
     figsize : tuple
     log_scale : bool
         Use log scale for colorbar.
     """
+    if isinstance(communities, str) and communities == "auto":
+        communities = detect_communities(W_original)
+
     fig, axes = plt.subplots(1, 2, figsize=figsize)
 
-    # Reorder nodes by community if provided
     if communities is not None:
         order = np.argsort(communities)
     else:
@@ -59,6 +189,8 @@ def plot_adjacency_comparison(W_original, W_sparse, labels=("Original", "Sparsif
     plt.tight_layout()
     return fig
 
+
+# ── Infection probability plots ───────────────────────────────────────
 
 def plot_infection_comparison(prob_original, prob_sparse,
                               labels=("Original", "Sparsified"),
