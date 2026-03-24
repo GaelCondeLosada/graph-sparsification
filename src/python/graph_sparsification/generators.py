@@ -4,23 +4,25 @@ import numpy as np
 from scipy import sparse
 
 
-def configuration_model(degree_sequence, weight_distribution="exponential",
-                        weight_params=None, rng=None):
+def configuration_model(n, degree_sampler, weight_sampler, rng=None):
     """Generate a weighted graph from the configuration model.
 
-    Each node gets a number of half-edges equal to its degree. Half-edges are
-    paired uniformly at random. Self-loops and multi-edges are collapsed (weights
-    summed). Edge weights are drawn iid from the specified distribution.
+    Each node gets a number of half-edges equal to its degree (sampled from
+    degree_sampler). Half-edges are paired uniformly at random. Self-loops and
+    multi-edges are collapsed (weights summed). Edge weights are drawn iid
+    from weight_sampler.
 
     Parameters
     ----------
-    degree_sequence : array-like of int
-        Desired degree for each node.
-    weight_distribution : str
-        "exponential", "uniform", or "lognormal".
-    weight_params : dict or None
-        Parameters for the weight distribution. Defaults depend on distribution.
-    rng : np.random.Generator or None
+    n : int
+        Number of nodes.
+    degree_sampler : callable
+        ``degree_sampler(n, rng) -> array of int`` — returns n positive integer
+        degrees.  Example: ``lambda n, rng: rng.integers(1, 51, size=n)``
+    weight_sampler : callable
+        ``weight_sampler(m, rng) -> array of float`` — returns m positive edge
+        weights.  Example: ``lambda m, rng: rng.exponential(1.0, size=m)``
+    rng : np.random.Generator or int or None
 
     Returns
     -------
@@ -28,8 +30,10 @@ def configuration_model(degree_sequence, weight_distribution="exponential",
         Weighted adjacency matrix (symmetric).
     """
     rng = np.random.default_rng(rng)
-    degree_sequence = np.asarray(degree_sequence, dtype=int)
-    n = len(degree_sequence)
+
+    # Sample degrees
+    degree_sequence = np.asarray(degree_sampler(n, rng), dtype=int)
+    degree_sequence = np.maximum(degree_sequence, 1)  # ensure at least degree 1
 
     # Ensure even sum of degrees
     total = degree_sequence.sum()
@@ -37,7 +41,6 @@ def configuration_model(degree_sequence, weight_distribution="exponential",
         degree_sequence = degree_sequence.copy()
         idx = rng.integers(n)
         degree_sequence[idx] += 1
-        total += 1
 
     # Build stub list and shuffle
     stubs = np.repeat(np.arange(n), degree_sequence)
@@ -56,22 +59,10 @@ def configuration_model(degree_sequence, weight_distribution="exponential",
     swap = src > dst
     src[swap], dst[swap] = dst[swap].copy(), src[swap].copy()
 
-    # Assign weights
-    weight_params = weight_params or {}
+    # Assign weights via user-supplied sampler
     m = len(src)
-    if weight_distribution == "exponential":
-        scale = weight_params.get("scale", 1.0)
-        weights = rng.exponential(scale, size=m)
-    elif weight_distribution == "uniform":
-        low = weight_params.get("low", 0.1)
-        high = weight_params.get("high", 1.0)
-        weights = rng.uniform(low, high, size=m)
-    elif weight_distribution == "lognormal":
-        mean = weight_params.get("mean", 0.0)
-        sigma = weight_params.get("sigma", 1.0)
-        weights = rng.lognormal(mean, sigma, size=m)
-    else:
-        raise ValueError(f"Unknown weight distribution: {weight_distribution}")
+    weights = np.asarray(weight_sampler(m, rng), dtype=float)
+    weights = np.abs(weights)  # safety: ensure positive
 
     # Build sparse matrix, summing duplicate edges
     W = sparse.coo_matrix((weights, (src, dst)), shape=(n, n))

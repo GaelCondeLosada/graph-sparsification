@@ -11,18 +11,27 @@ from graph_sparsification.sir import sir_simulation, sir_monte_carlo, calibrate_
 
 class TestConfigurationModel:
     def test_basic(self):
-        degrees = [3] * 20
-        W = configuration_model(degrees, rng=42)
+        deg = lambda n, rng: np.full(n, 3)
+        wt = lambda m, rng: rng.exponential(1.0, size=m)
+        W = configuration_model(20, deg, wt, rng=42)
         assert W.shape == (20, 20)
         assert (W != W.T).nnz == 0  # symmetric
 
     def test_weights_positive(self):
-        W = configuration_model([4] * 50, rng=0)
+        deg = lambda n, rng: np.full(n, 4)
+        wt = lambda m, rng: rng.exponential(1.0, size=m)
+        W = configuration_model(50, deg, wt, rng=0)
         assert W.data.min() > 0
 
-    def test_distributions(self):
-        for dist in ["exponential", "uniform", "lognormal"]:
-            W = configuration_model([3] * 30, weight_distribution=dist, rng=42)
+    def test_lambda_samplers(self):
+        samplers = [
+            lambda m, rng: rng.exponential(1.0, size=m),
+            lambda m, rng: rng.uniform(0.1, 1.0, size=m),
+            lambda m, rng: rng.lognormal(0.0, 1.0, size=m),
+        ]
+        deg = lambda n, rng: rng.integers(2, 6, size=n)
+        for wt in samplers:
+            W = configuration_model(30, deg, wt, rng=42)
             assert W.nnz > 0
 
 
@@ -79,8 +88,8 @@ class TestMetricBackbone:
     def test_sparsifies(self):
         # Random graph should have fewer edges in backbone
         n = 50
-        rng = np.random.default_rng(42)
-        W = configuration_model([6] * n, rng=rng)
+        W = configuration_model(n, lambda n, rng: np.full(n, 6),
+                                lambda m, rng: rng.exponential(1.0, size=m), rng=42)
         if W.nnz > 0:
             W_mbb = metric_backbone(W)
             assert W_mbb.nnz <= W.nnz
@@ -89,7 +98,8 @@ class TestMetricBackbone:
 class TestEffectiveResistance:
     def test_sparsifies(self):
         n = 30
-        W = configuration_model([5] * n, rng=42)
+        W = configuration_model(n, lambda n, rng: np.full(n, 5),
+                                lambda m, rng: rng.exponential(1.0, size=m), rng=42)
         if W.nnz > 0:
             W_sparse = effective_resistance_sparsify(W, fraction=0.5, rng=42)
             assert W_sparse.shape == (n, n)
@@ -108,9 +118,8 @@ class TestEffectiveResistance:
 
 class TestSIR:
     def _make_graph(self):
-        n = 30
-        return configuration_model([4] * n, weight_distribution="uniform",
-                                   weight_params={"low": 0.5, "high": 1.5}, rng=42)
+        return configuration_model(30, lambda n, rng: np.full(n, 4),
+                                   lambda m, rng: rng.uniform(0.5, 1.5, size=m), rng=42)
 
     def test_python_backend(self):
         W = self._make_graph()
@@ -137,7 +146,8 @@ class TestSIR:
 
 class TestCalibrateBeta:
     def test_converges(self):
-        W = configuration_model([5] * 50, rng=42)
+        W = configuration_model(50, lambda n, rng: np.full(n, 5),
+                                lambda m, rng: rng.exponential(1.0, size=m), rng=42)
         beta, info = calibrate_beta(
             W, gamma=1.0, target_mean_infection=0.5, target_range=(0.2, 0.8),
             n_calibration_runs=15, rng=42, verbose=False
@@ -146,7 +156,8 @@ class TestCalibrateBeta:
         assert 0.1 < info['mean_infection'] < 0.9
 
     def test_returns_history(self):
-        W = configuration_model([5] * 40, rng=0)
+        W = configuration_model(40, lambda n, rng: np.full(n, 5),
+                                lambda m, rng: rng.exponential(1.0, size=m), rng=0)
         _, info = calibrate_beta(W, n_calibration_runs=10, rng=0,
                                  max_iterations=5, verbose=False)
         assert len(info['history']) > 0
