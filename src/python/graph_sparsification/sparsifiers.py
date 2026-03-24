@@ -220,18 +220,18 @@ def effective_resistance_sparsify(W, q=None, fraction=0.1, n_edges=None,
                                    rng=None):
     """Sparsify a graph using the Spielman-Srivastava algorithm.
 
-    Two modes of operation:
+    Two modes of operation (both follow the Spielman-Srivastava reweighting
+    scheme from Mercier et al. 2022, so that E[w̃_e] = w_e):
 
     **Sampling mode** (default): sample *q* edges with replacement,
-    probability proportional to w_e * R_e, then reweight to preserve the
-    Laplacian in expectation.  The number of *distinct* edges in the result
-    is random.
+    probability p_e proportional to w_e * R_e, reweight
+    w̃_e = w_e * count / (q * p_e).  The number of *distinct* edges in
+    the result is random.
 
-    **Exact-edges mode** (``n_edges`` is set): keep exactly the top
-    ``n_edges`` edges ranked by effective-resistance importance
-    w_e * R_e, with original weights.  This is deterministic and
-    guarantees an exact edge count for fair comparison with other
-    sparsifiers.
+    **Exact-edges mode** (``n_edges`` is set): sample exactly *n_edges*
+    distinct edges without replacement, probability proportional to
+    w_e * R_e, reweight w̃_e = w_e / (n_edges * p_e).  Guarantees an
+    exact edge count for fair comparison with other sparsifiers.
 
     Parameters
     ----------
@@ -244,8 +244,8 @@ def effective_resistance_sparsify(W, q=None, fraction=0.1, n_edges=None,
         Fraction of total edges to target (sampling mode, used if *q* is
         None).
     n_edges : int or None
-        If set, switch to exact-edges mode and keep exactly this many
-        edges (upper-triangle count).  Overrides *q* and *fraction*.
+        If set, switch to exact-edges mode and sample exactly this many
+        distinct edges (upper-triangle count).  Overrides *q* and *fraction*.
     rng : np.random.Generator or None
 
     Returns
@@ -273,29 +273,31 @@ def effective_resistance_sparsify(W, q=None, fraction=0.1, n_edges=None,
                        for i, j in zip(edges_i, edges_j)])
     importances = weights * R_vals
 
+    # Sampling probabilities (shared by both modes)
+    total_importance = importances.sum()
+    if total_importance <= 0:
+        probs = np.ones(m) / m
+    else:
+        probs = importances / total_importance
+
     # ── Exact-edges mode ──────────────────────────────────────────────
     if n_edges is not None:
         k = min(n_edges, m)
-        top_k = np.argsort(importances)[::-1][:k]
+        # Sample k distinct edges without replacement, prob ∝ w_e * R_e
+        selected = rng.choice(m, size=k, replace=False, p=probs)
 
-        sel_rows = edges_i[top_k]
-        sel_cols = edges_j[top_k]
-        sel_weights = weights[top_k]
+        # Reweight: w̃_e = w_e / (k * p_e)  so that E[w̃_e] = w_e
+        sel_weights = weights[selected] / (k * probs[selected])
 
         W_sparse = sparse.coo_matrix(
-            (sel_weights, (sel_rows, sel_cols)), shape=(n, n))
+            (sel_weights, (edges_i[selected], edges_j[selected])),
+            shape=(n, n))
         W_sparse = W_sparse + W_sparse.T
         return W_sparse.tocsr()
 
     # ── Sampling mode (Spielman-Srivastava) ───────────────────────────
     if q is None:
         q = max(int(fraction * m), n)
-
-    total_importance = importances.sum()
-    if total_importance <= 0:
-        probs = np.ones(m) / m
-    else:
-        probs = importances / total_importance
 
     sampled_indices = rng.choice(m, size=q, replace=True, p=probs)
     counts = np.bincount(sampled_indices, minlength=m)

@@ -193,20 +193,20 @@ class TestEffectiveResistance:
         W_sparse = effective_resistance_sparsify(W_prox, n_edges=target)
         assert sparse.triu(W_sparse).nnz == target
 
-    def test_exact_edges_preserves_weights(self):
-        n = 30
-        W = configuration_model(n, lambda n, rng: np.full(n, 5),
+    def test_exact_edges_reweights(self):
+        """Reweighted edges should be >= original (upweighted to compensate)."""
+        n = 40
+        W = configuration_model(n, lambda n, rng: np.full(n, 6),
                                 lambda m, rng: rng.exponential(1.0, size=m), rng=42)
         if W.nnz == 0:
             return
         W_prox = to_proximity(W)
-        W_sparse = effective_resistance_sparsify(W_prox, n_edges=10)
-        # All weights in the sparse graph should appear in the original
-        orig_triu = sparse.triu(W_prox, format="coo")
-        orig_weights = set(np.round(orig_triu.data, 12))
-        sparse_triu = sparse.triu(W_sparse, format="coo")
-        for w in sparse_triu.data:
-            assert round(w, 12) in orig_weights
+        n_orig = sparse.triu(W_prox).nnz
+        target = max(n_orig // 3, 5)
+        W_sparse = effective_resistance_sparsify(W_prox, n_edges=target, rng=42)
+        # With fewer edges kept, reweighted values should generally be larger
+        # than original (w̃ = w / (k*p) and k < m so upscaling happens)
+        assert W_sparse.data.mean() > W_prox.data.mean()
 
 
 class TestSIR:
