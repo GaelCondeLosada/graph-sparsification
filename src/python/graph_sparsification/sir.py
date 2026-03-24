@@ -247,20 +247,18 @@ def sir_monte_carlo(W, beta, gamma, initial_infected=None, n_runs=100,
     }
 
 
-def calibrate_beta(W, gamma=1.0, target_mean_infection=0.6,
-                   target_range=(0.45, 0.7), initial_infected=None,
+def calibrate_beta(W, gamma=1.0, target_range=(0.6, 0.7), initial_infected=None,
                    n_calibration_runs=20, t_max=100.0, rng=None,
                    beta_min=1e-4, beta_max=10.0, max_iterations=30,
-                   verbose=True):
+                   verbose=True, start_beta=1.0):
     """Find a beta that produces an interesting spread of infection probabilities.
 
-    Uses bisection search on beta to target a mean infection probability near
-    `target_mean_infection`. The goal is to avoid the two degenerate regimes:
-    - beta too low: almost no one gets infected (boring)
-    - beta too high: everyone gets infected with probability ~1 (no variance)
+    Uses bisection on beta so the **mean** node infection probability (from
+    Monte Carlo) falls inside ``target_range``. If the mean is above the range,
+    beta is reduced; if below, beta is increased. Stops when the mean lies in
+    the range or when the search interval is tight.
 
-    A good range is when mean infection probability is around 0.4-0.6 and
-    the standard deviation across nodes is high (heterogeneous spread).
+    This avoids degenerate regimes (almost no infection vs. everyone infected).
 
     Parameters
     ----------
@@ -268,10 +266,9 @@ def calibrate_beta(W, gamma=1.0, target_mean_infection=0.6,
         Weighted adjacency matrix.
     gamma : float
         Recovery rate.
-    target_mean_infection : float
-        Desired mean infection probability across nodes (default 0.5).
     target_range : tuple of float
-        Acceptable range for mean infection probability.
+        Acceptable interval ``(low, high)`` for mean infection probability
+        (inclusive). If ``low > high``, the bounds are swapped.
     initial_infected : array-like or None
         Initially infected nodes. If None, picks highest-degree node.
     n_calibration_runs : int
@@ -285,6 +282,9 @@ def calibrate_beta(W, gamma=1.0, target_mean_infection=0.6,
         Maximum bisection iterations.
     verbose : bool
         Print progress.
+    start_beta : float or None
+        If given, the first trial uses this value (clipped to ``[beta_min, beta_max]``);
+        later iterations use the bisection midpoint as usual.
 
     Returns
     -------
@@ -302,7 +302,7 @@ def calibrate_beta(W, gamma=1.0, target_mean_infection=0.6,
         rng = np.random.default_rng(rng)
 
     W = sparse.csr_matrix(W, dtype=float)
-    n = W.shape[0]
+    t_lo, t_hi = min(target_range[0], target_range[1]), max(target_range[0], target_range[1])
 
     if initial_infected is None:
         degrees = np.array(W.sum(axis=1)).ravel()
@@ -310,12 +310,18 @@ def calibrate_beta(W, gamma=1.0, target_mean_infection=0.6,
 
     lo, hi = beta_min, beta_max
     history = []
-    best_beta = (lo + hi) / 2
+    if start_beta is not None:
+        best_beta = float(np.clip(start_beta, beta_min, beta_max))
+    else:
+        best_beta = (lo + hi) / 2
     best_probs = None
     best_distance = float('inf')
 
     for iteration in range(max_iterations):
-        beta = (lo + hi) / 2
+        if iteration == 0 and start_beta is not None:
+            beta = float(np.clip(start_beta, beta_min, beta_max))
+        else:
+            beta = (lo + hi) / 2
 
         result = sir_monte_carlo(W, beta, gamma, initial_infected,
                                  n_runs=n_calibration_runs, t_max=t_max, rng=rng)
@@ -324,7 +330,12 @@ def calibrate_beta(W, gamma=1.0, target_mean_infection=0.6,
         std_inf = probs.std()
 
         history.append((beta, mean_inf))
-        distance = abs(mean_inf - target_mean_infection)
+        if mean_inf < t_lo:
+            distance = t_lo - mean_inf
+        elif mean_inf > t_hi:
+            distance = mean_inf - t_hi
+        else:
+            distance = 0.0
 
         if verbose:
             print(f"  iter {iteration+1:2d}: beta={beta:.6f}, "
@@ -335,8 +346,7 @@ def calibrate_beta(W, gamma=1.0, target_mean_infection=0.6,
             best_beta = beta
             best_probs = probs.copy()
 
-        # Check if we're in the target range
-        if target_range[0] <= mean_inf <= target_range[1]:
+        if t_lo <= mean_inf <= t_hi:
             if verbose:
                 print(f"  -> Converged: beta={beta:.6f}")
             return beta, {
@@ -346,13 +356,11 @@ def calibrate_beta(W, gamma=1.0, target_mean_infection=0.6,
                 'history': history,
             }
 
-        # Bisection: if mean infection is too high, reduce beta
-        if mean_inf > target_mean_infection:
+        if mean_inf > t_hi:
             hi = beta
         else:
             lo = beta
 
-        # Early stop if bounds are very tight
         if (hi - lo) / max(hi, 1e-10) < 0.01:
             break
 
