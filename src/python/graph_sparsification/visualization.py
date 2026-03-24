@@ -228,6 +228,7 @@ def plot_infection_comparison(prob_original, prob_sparse,
         r2 = 0.0
 
     fig, ax = plt.subplots(figsize=figsize)
+    ax.grid(True, linestyle="-", alpha=0.4)
 
     ax.scatter(po, ps, alpha=0.4, s=40, edgecolors='none')
     ax.plot([0, 1], [0, 1], 'r--', linewidth=1, label='y = x')
@@ -294,6 +295,7 @@ def plot_multi_infection_comparison(prob_original, sparsified_probs,
         ax.set_xlim(-0.02, 1.02)
         ax.set_ylim(-0.02, 1.02)
         ax.set_aspect('equal')
+        ax.grid(True, linestyle="-", alpha=0.4)
 
     plt.tight_layout()
     return fig
