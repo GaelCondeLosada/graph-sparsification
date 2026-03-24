@@ -182,6 +182,32 @@ class TestEffectiveResistance:
         n_comp, _ = connected_components(W_sparse, directed=False)
         assert n_comp == 1
 
+    def test_exact_edges_mode(self):
+        n = 40
+        W = configuration_model(n, lambda n, rng: np.full(n, 5),
+                                lambda m, rng: rng.exponential(1.0, size=m), rng=42)
+        if W.nnz == 0:
+            return
+        W_prox = to_proximity(W)
+        target = 20
+        W_sparse = effective_resistance_sparsify(W_prox, n_edges=target)
+        assert sparse.triu(W_sparse).nnz == target
+
+    def test_exact_edges_preserves_weights(self):
+        n = 30
+        W = configuration_model(n, lambda n, rng: np.full(n, 5),
+                                lambda m, rng: rng.exponential(1.0, size=m), rng=42)
+        if W.nnz == 0:
+            return
+        W_prox = to_proximity(W)
+        W_sparse = effective_resistance_sparsify(W_prox, n_edges=10)
+        # All weights in the sparse graph should appear in the original
+        orig_triu = sparse.triu(W_prox, format="coo")
+        orig_weights = set(np.round(orig_triu.data, 12))
+        sparse_triu = sparse.triu(W_sparse, format="coo")
+        for w in sparse_triu.data:
+            assert round(w, 12) in orig_weights
+
 
 class TestSIR:
     def _make_graph(self):

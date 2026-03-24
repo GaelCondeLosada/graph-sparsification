@@ -216,21 +216,36 @@ def _compute_effective_resistances(W, n_projections=None, epsilon=0.1):
     return resistances
 
 
-def effective_resistance_sparsify(W, q=None, fraction=0.1, rng=None):
+def effective_resistance_sparsify(W, q=None, fraction=0.1, n_edges=None,
+                                   rng=None):
     """Sparsify a graph using the Spielman-Srivastava algorithm.
 
-    Samples edges with probability proportional to w_e * R_e (effective
-    resistance importance), then reweights to preserve the Laplacian in
-    expectation.
+    Two modes of operation:
+
+    **Sampling mode** (default): sample *q* edges with replacement,
+    probability proportional to w_e * R_e, then reweight to preserve the
+    Laplacian in expectation.  The number of *distinct* edges in the result
+    is random.
+
+    **Exact-edges mode** (``n_edges`` is set): keep exactly the top
+    ``n_edges`` edges ranked by effective-resistance importance
+    w_e * R_e, with original weights.  This is deterministic and
+    guarantees an exact edge count for fair comparison with other
+    sparsifiers.
 
     Parameters
     ----------
     W : scipy.sparse.csr_matrix
         Weighted adjacency matrix.
     q : int or None
-        Number of edge samples. If None, computed from fraction.
+        Number of edge samples (sampling mode). If None, computed from
+        *fraction*.
     fraction : float
-        Fraction of total edges to target (used if q is None).
+        Fraction of total edges to target (sampling mode, used if *q* is
+        None).
+    n_edges : int or None
+        If set, switch to exact-edges mode and keep exactly this many
+        edges (upper-triangle count).  Overrides *q* and *fraction*.
     rng : np.random.Generator or None
 
     Returns
@@ -252,46 +267,44 @@ def effective_resistance_sparsify(W, q=None, fraction=0.1, rng=None):
     if m == 0:
         return W.copy()
 
-    if q is None:
-        q = max(int(fraction * m), n)
-
     # Compute effective resistances
     resistances = _compute_effective_resistances(W)
-
-    # Edge importances: u_e = w_e * R_e
     R_vals = np.array([resistances.get((i, j), 0.0)
                        for i, j in zip(edges_i, edges_j)])
     importances = weights * R_vals
 
-    # Sampling probabilities
+    # ── Exact-edges mode ──────────────────────────────────────────────
+    if n_edges is not None:
+        k = min(n_edges, m)
+        top_k = np.argsort(importances)[::-1][:k]
+
+        sel_rows = edges_i[top_k]
+        sel_cols = edges_j[top_k]
+        sel_weights = weights[top_k]
+
+        W_sparse = sparse.coo_matrix(
+            (sel_weights, (sel_rows, sel_cols)), shape=(n, n))
+        W_sparse = W_sparse + W_sparse.T
+        return W_sparse.tocsr()
+
+    # ── Sampling mode (Spielman-Srivastava) ───────────────────────────
+    if q is None:
+        q = max(int(fraction * m), n)
+
     total_importance = importances.sum()
     if total_importance <= 0:
-        # Fallback to uniform
         probs = np.ones(m) / m
     else:
         probs = importances / total_importance
 
-    # Sample q edges with replacement
     sampled_indices = rng.choice(m, size=q, replace=True, p=probs)
-
-    # Count how many times each edge was sampled
     counts = np.bincount(sampled_indices, minlength=m)
 
     # Reweight: w_tilde_e = w_e * count / (q * p_e)
-    new_rows, new_cols, new_weights = [], [], []
-    for idx in range(m):
-        if counts[idx] > 0:
-            w_new = weights[idx] * counts[idx] / (q * probs[idx])
-            new_rows.append(edges_i[idx])
-            new_cols.append(edges_j[idx])
-            new_weights.append(w_new)
+    selected = counts > 0
+    w_new = weights[selected] * counts[selected] / (q * probs[selected])
 
-    new_rows = np.array(new_rows, dtype=int)
-    new_cols = np.array(new_cols, dtype=int)
-    new_weights = np.array(new_weights, dtype=float)
-
-    W_sparse = sparse.coo_matrix((new_weights, (new_rows, new_cols)), shape=(n, n))
+    W_sparse = sparse.coo_matrix(
+        (w_new, (edges_i[selected], edges_j[selected])), shape=(n, n))
     W_sparse = W_sparse + W_sparse.T
-    W_sparse = W_sparse.tocsr()
-
-    return W_sparse
+    return W_sparse.tocsr()

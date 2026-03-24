@@ -7,7 +7,7 @@ Research codebase for studying graph sparsification methods and their impact on 
 ### Prerequisites
 
 - Python >= 3.9
-- A C++ compiler with C++17 support (g++ or clang++)
+- A C++ compiler with C++17 support (g++, clang++, or MSVC)
 - pip
 
 ### Installation
@@ -18,17 +18,14 @@ cd graph-sparsification
 
 # Create and activate a virtual environment (recommended)
 python -m venv .venv
-source .venv/bin/activate
+source .venv/bin/activate   # Linux/macOS
+# .venv\Scripts\activate    # Windows
 
 # Install in editable mode (compiles the C++ SIR module automatically)
 pip install -e .
 ```
 
-If the C++ compilation fails (usually a compiler detection issue), set `CXX` explicitly:
-
-```bash
-CXX=g++ pip install -e .
-```
+This works on Linux, macOS, and Windows — the build system auto-detects your C++ compiler. If the C++ compilation fails for any reason, the package still installs and falls back to a pure-Python SIR implementation.
 
 ### Verify the installation
 
@@ -36,23 +33,10 @@ CXX=g++ pip install -e .
 # Check the C++ SIR backend compiled
 python -c "from graph_sparsification._sir_cpp import sir_simulation_cpp; print('C++ SIR: OK')"
 
-# Check all modules load
-python -c "from graph_sparsification import *; print('All imports: OK')"
-
 # Run the test suite
 pip install pytest
 pytest tests/ -v
 ```
-
-### Building the C++ module manually
-
-If you need to rebuild the C++ extension without reinstalling:
-
-```bash
-CXX=g++ python setup.py build_ext --inplace
-```
-
-The compiled `.so` file is placed in `src/python/graph_sparsification/`. If the C++ module is unavailable, the package falls back to a pure Python SIR implementation automatically.
 
 ## Project structure
 

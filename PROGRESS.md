@@ -50,3 +50,11 @@
 - MBBr preserves the MBB sparsity pattern but rescales proximity weights so the total matches the original graph — this ensures fair comparison of SIR dynamics
 - EffR and SIR both operate on proximity graphs — transmission rate beta * w_e uses proximity as weight
 - Previous decision "Weights represent distances/costs throughout" is **superseded**: now explicitly dual-representation with conversions
+
+## 2026-03-24: Cross-platform build & EffR exact-edges mode
+
+### Completed
+- **Cross-platform C++ build**: `setup.py` now auto-detects the C++ compiler (`g++`, `c++`, `clang++`) by setting `CXX` when not already set. Uses platform-specific compile flags (`/O2 /std:c++17` on Windows, `-stdlib=libc++` on macOS). No more `CXX=g++` workaround needed — `pip install -e .` works on Linux, macOS, and Windows.
+- **EffR exact-edges mode**: `effective_resistance_sparsify()` now accepts `n_edges` parameter. When set, keeps exactly that many edges (top-k by w_e * R_e importance), deterministically. Original weights preserved.
+- **Notebook updated**: EffR now uses `n_edges=n_mbb` so all 3 sparsifiers (MBB, MBBr, EffR) keep the exact same number of edges for fair comparison.
+- **Tests**: 24 tests (added exact-edges mode tests), all passing

@@ -12,7 +12,14 @@ dependencies = [
     "scipy>=1.10",
     "matplotlib>=3.7",
     "networkx>=3.0",
+    "pybind11>=2.11",
 ]
+
+[project.optional-dependencies]
+dev = ["pytest", "jupyter"]
 
 [tool.setuptools.packages.find]
 where = ["src/python"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
