@@ -93,7 +93,8 @@ sir_simulation_cpp(
     };
 
     // Initialize infected nodes
-    for (ssize_t i = 0; i < init.shape(0); ++i) {
+    auto n_init = init.shape(0);
+    for (decltype(n_init) i = 0; i < n_init; ++i) {
         int node = init(i);
         state[node] = INFECTED;
         arrival_times[node] = 0.0;
