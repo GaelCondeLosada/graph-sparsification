@@ -5,7 +5,15 @@ from scipy import sparse
 import pytest
 
 from graph_sparsification.generators import configuration_model, wsbm, wsbm_fast
-from graph_sparsification.sparsifiers import metric_backbone, effective_resistance_sparsify
+from graph_sparsification.sparsifiers import (
+    metric_backbone,
+    metric_backbone_rescaled,
+    effective_resistance_sparsify,
+    proximity_to_distance,
+    distance_to_proximity,
+    to_proximity,
+    to_distance,
+)
 from graph_sparsification.sir import sir_simulation, sir_monte_carlo, calibrate_beta
 
 
@@ -56,6 +64,35 @@ class TestWSBM:
         assert W.nnz > 0
 
 
+class TestConversions:
+    def test_roundtrip_scalars(self):
+        distances = np.array([0.0, 0.5, 1.0, 5.0, 100.0])
+        proxs = distance_to_proximity(distances)
+        assert np.all(proxs >= 0) and np.all(proxs <= 1)
+        distances_back = proximity_to_distance(proxs)
+        np.testing.assert_allclose(distances_back, distances, atol=1e-12)
+
+    def test_roundtrip_sparse(self):
+        W = sparse.random(10, 10, density=0.3, format='csr', random_state=42)
+        W = W + W.T
+        W.data = np.abs(W.data) + 0.1  # ensure positive
+        W_prox = to_proximity(W)
+        W_back = to_distance(W_prox)
+        np.testing.assert_allclose(W_back.data, W.data, atol=1e-12)
+
+    def test_proximity_bounds(self):
+        distances = np.array([0.0, 1e-6, 1.0, 1e6])
+        proxs = distance_to_proximity(distances)
+        assert np.all(proxs > 0)
+        assert np.all(proxs <= 1)
+
+    def test_distance_monotonic(self):
+        # Larger distance -> smaller proximity
+        d = np.array([1.0, 2.0, 10.0])
+        p = distance_to_proximity(d)
+        assert np.all(np.diff(p) < 0)
+
+
 class TestMetricBackbone:
     def test_small_graph(self):
         # Triangle: 0-1 (w=1), 0-2 (w=3), 1-2 (w=1)
@@ -95,22 +132,52 @@ class TestMetricBackbone:
             assert W_mbb.nnz <= W.nnz
 
 
+class TestMetricBackboneRescaled:
+    def test_preserves_sparsity(self):
+        n = 50
+        W_dist = configuration_model(n, lambda n, rng: np.full(n, 6),
+                                     lambda m, rng: rng.exponential(1.0, size=m), rng=42)
+        W_mbb_dist = metric_backbone(W_dist)
+        W_mbbr = metric_backbone_rescaled(W_dist)
+        # Same sparsity pattern as MBB
+        assert sparse.triu(W_mbbr).nnz == sparse.triu(W_mbb_dist).nnz
+
+    def test_rescales_proximity_sum(self):
+        n = 50
+        W_dist = configuration_model(n, lambda n, rng: np.full(n, 6),
+                                     lambda m, rng: rng.exponential(1.0, size=m), rng=42)
+        if W_dist.nnz == 0:
+            return
+        W_prox = to_proximity(W_dist)
+        W_mbbr = metric_backbone_rescaled(W_dist)
+        # Sum of proximities should match original
+        np.testing.assert_allclose(W_mbbr.data.sum(), W_prox.data.sum(), rtol=1e-10)
+
+    def test_returns_proximity_weights(self):
+        n = 30
+        W_dist = configuration_model(n, lambda n, rng: np.full(n, 5),
+                                     lambda m, rng: rng.exponential(1.0, size=m), rng=42)
+        W_mbbr = metric_backbone_rescaled(W_dist)
+        # MBBr weights are rescaled proximities — they should be positive
+        if W_mbbr.nnz > 0:
+            assert W_mbbr.data.min() > 0
+
+
 class TestEffectiveResistance:
     def test_sparsifies(self):
         n = 30
         W = configuration_model(n, lambda n, rng: np.full(n, 5),
                                 lambda m, rng: rng.exponential(1.0, size=m), rng=42)
         if W.nnz > 0:
-            W_sparse = effective_resistance_sparsify(W, fraction=0.5, rng=42)
+            W_prox = to_proximity(W)
+            W_sparse = effective_resistance_sparsify(W_prox, fraction=0.5, rng=42)
             assert W_sparse.shape == (n, n)
-            # Should have fewer edges
-            assert sparse.triu(W_sparse).nnz <= sparse.triu(W).nnz + 5  # some tolerance
+            assert sparse.triu(W_sparse).nnz <= sparse.triu(W_prox).nnz + 5
 
     def test_preserves_connectivity(self):
-        # With enough samples, graph should remain connected
         from scipy.sparse.csgraph import connected_components
         n = 20
-        W = sparse.csr_matrix(np.ones((n, n)) - np.eye(n))  # complete graph
+        W = sparse.csr_matrix(np.ones((n, n)) - np.eye(n))
         W_sparse = effective_resistance_sparsify(W, q=n * 5, rng=42)
         n_comp, _ = connected_components(W_sparse, directed=False)
         assert n_comp == 1
@@ -118,15 +185,16 @@ class TestEffectiveResistance:
 
 class TestSIR:
     def _make_graph(self):
-        return configuration_model(30, lambda n, rng: np.full(n, 4),
-                                   lambda m, rng: rng.uniform(0.5, 1.5, size=m), rng=42)
+        W_dist = configuration_model(30, lambda n, rng: np.full(n, 4),
+                                     lambda m, rng: rng.uniform(0.5, 1.5, size=m), rng=42)
+        return to_proximity(W_dist)
 
     def test_python_backend(self):
         W = self._make_graph()
         result = sir_simulation(W, beta=0.5, gamma=1.0,
                                 initial_infected=[0], rng=42, use_cpp=False)
         assert 'infected' in result
-        assert result['infected'][0]  # initial node always infected
+        assert result['infected'][0]
         assert result['arrival_times'][0] == 0.0
 
     def test_cpp_backend(self):
@@ -140,25 +208,27 @@ class TestSIR:
         W = self._make_graph()
         result = sir_monte_carlo(W, beta=0.5, gamma=1.0,
                                  initial_infected=[0], n_runs=10, rng=42)
-        assert result['infection_prob'][0] == 1.0  # always infected
+        assert result['infection_prob'][0] == 1.0
         assert len(result['all_arrival_times']) == 10
 
 
 class TestCalibrateBeta:
     def test_converges(self):
-        W = configuration_model(50, lambda n, rng: np.full(n, 5),
-                                lambda m, rng: rng.exponential(1.0, size=m), rng=42)
+        W_dist = configuration_model(50, lambda n, rng: np.full(n, 5),
+                                     lambda m, rng: rng.exponential(1.0, size=m), rng=42)
+        W_prox = to_proximity(W_dist)
         beta, info = calibrate_beta(
-            W, gamma=1.0, target_mean_infection=0.5, target_range=(0.2, 0.8),
+            W_prox, gamma=1.0, target_mean_infection=0.5, target_range=(0.2, 0.8),
             n_calibration_runs=15, rng=42, verbose=False
         )
         assert 0.0 < beta < 10.0
         assert 0.1 < info['mean_infection'] < 0.9
 
     def test_returns_history(self):
-        W = configuration_model(40, lambda n, rng: np.full(n, 5),
-                                lambda m, rng: rng.exponential(1.0, size=m), rng=0)
-        _, info = calibrate_beta(W, n_calibration_runs=10, rng=0,
+        W_dist = configuration_model(40, lambda n, rng: np.full(n, 5),
+                                     lambda m, rng: rng.exponential(1.0, size=m), rng=0)
+        W_prox = to_proximity(W_dist)
+        _, info = calibrate_beta(W_prox, n_calibration_runs=10, rng=0,
                                  max_iterations=5, verbose=False)
         assert len(info['history']) > 0
         assert 'infection_prob' in info

@@ -75,6 +75,17 @@ graph-sparsification/
 └── pyproject.toml
 ```
 
+## Weight conventions
+
+The codebase distinguishes between two weight spaces:
+
+| Space | Range | Used by |
+|---|---|---|
+| **Distance** (cost) | (0, ∞] | Graph generators, Metric Backbone (shortest paths) |
+| **Proximity** | [0, 1] | Effective Resistance, SIR simulation |
+
+Conversions (element-wise): `proximity = 1/(distance+1)` and `distance = 1/proximity - 1`.
+
 ## Quick start
 
 ### Generate a graph and sparsify it
@@ -83,17 +94,21 @@ graph-sparsification/
 from graph_sparsification import *
 import numpy as np
 
-# Generate a weighted stochastic block model
-W, z = wsbm(n=200, k=3,
-            pi=[1/3, 1/3, 1/3],
-            B=np.array([[10, 2, 2], [2, 10, 2], [2, 2, 10]], dtype=float),
-            rng=42)
+# Generate a distance-weighted stochastic block model
+W_dist, z = wsbm(n=200, k=3,
+                  pi=[1/3, 1/3, 1/3],
+                  B=np.array([[10, 2, 2], [2, 10, 2], [2, 2, 10]], dtype=float),
+                  rng=42)
 
-# Compute the metric backbone
-W_mbb = metric_backbone(W)
+# Metric Backbone (operates on distances)
+W_mbb_dist = metric_backbone(W_dist)
 
-# Sparsify by effective resistance (keep ~10% of edges)
-W_effr = effective_resistance_sparsify(W, fraction=0.1, rng=42)
+# MBB Rescaled (rescales proximities to match original graph's total)
+W_mbbr_prox = metric_backbone_rescaled(W_dist)
+
+# Convert to proximity for EffR and SIR
+W_prox = to_proximity(W_dist)
+W_effr_prox = effective_resistance_sparsify(W_prox, fraction=0.1, rng=42)
 ```
 
 ### Run SIR and calibrate beta
@@ -101,12 +116,12 @@ W_effr = effective_resistance_sparsify(W, fraction=0.1, rng=42)
 The `calibrate_beta` function finds a transmission rate that produces a spread of infection probabilities across nodes (avoiding the degenerate cases of "nobody infected" or "everyone infected"):
 
 ```python
-# Auto-calibrate beta for an interesting epidemic regime
-beta, info = calibrate_beta(W, gamma=1.0, target_mean_infection=0.5, rng=42)
+# Auto-calibrate beta on the proximity graph
+beta, info = calibrate_beta(W_prox, gamma=1.0, target_mean_infection=0.5, rng=42)
 print(f"beta={beta:.4f}, mean infection={info['mean_infection']:.2f}")
 
-# Run Monte Carlo SIR
-result = sir_monte_carlo(W, beta=beta, gamma=1.0,
+# Run Monte Carlo SIR (on proximity graph)
+result = sir_monte_carlo(W_prox, beta=beta, gamma=1.0,
                          initial_infected=[0], n_runs=200, rng=42)
 print(f"Infection probabilities: min={result['infection_prob'].min():.2f}, "
       f"max={result['infection_prob'].max():.2f}")
@@ -115,16 +130,20 @@ print(f"Infection probabilities: min={result['infection_prob'].min():.2f}, "
 ### Compare sparsifiers
 
 ```python
-# Run SIR on original and sparsified graphs
-sir_orig = sir_monte_carlo(W, beta, 1.0, [0], n_runs=200, rng=42)
-sir_mbb  = sir_monte_carlo(W_mbb, beta, 1.0, [0], n_runs=200, rng=42)
-sir_effr = sir_monte_carlo(W_effr, beta, 1.0, [0], n_runs=200, rng=42)
+# Convert MBB to proximity for SIR comparison
+W_mbb_prox = to_proximity(W_mbb_dist)
 
-# Scatter plot: one point per node
+# Run SIR on original and all sparsified graphs (all proximity)
+sir_orig = sir_monte_carlo(W_prox,      beta, 1.0, [0], n_runs=200, rng=42)
+sir_mbb  = sir_monte_carlo(W_mbb_prox,  beta, 1.0, [0], n_runs=200, rng=42)
+sir_mbbr = sir_monte_carlo(W_mbbr_prox, beta, 1.0, [0], n_runs=200, rng=42)
+sir_effr = sir_monte_carlo(W_effr_prox, beta, 1.0, [0], n_runs=200, rng=42)
+
+# Scatter plot: one point per node, 3-panel comparison
 fig = plot_multi_infection_comparison(
     sir_orig['infection_prob'],
-    [sir_mbb['infection_prob'], sir_effr['infection_prob']],
-    ['Metric Backbone', 'Effective Resistance'],
+    [sir_mbb['infection_prob'], sir_mbbr['infection_prob'], sir_effr['infection_prob']],
+    ['MBB', 'MBBr', 'Effective Resistance'],
 )
 ```
 
@@ -134,15 +153,16 @@ fig = plot_multi_infection_comparison(
 jupyter notebook notebooks/experiments.ipynb
 ```
 
-The notebook generates 4 graph types (configuration model, wSBM k=3, planted partition k=2, dense configuration model), auto-calibrates beta for each, computes both sparsifications, runs SIR on all, and produces comparison plots.
+The notebook loops over 8 degree × 7 weight distributions on the configuration model, auto-calibrates beta for each, computes all 3 sparsifications (MBB, MBBr, EffR), runs SIR on proximity graphs, and produces comparison plots with R² summary.
 
 ## Algorithms
 
 | Component | Method | Reference |
 |---|---|---|
-| **Metric Backbone** | All-pairs shortest paths; keep edge (u,v) iff w(u,v) = d(u,v) | Dreveton et al., NeurIPS 2024 |
-| **EffR Sparsification** | Sample edges with prob. proportional to w_e * R_e, reweight | Spielman & Srivastava, SIAM J. Comput. 2011 |
-| **SIR Simulation** | Continuous-time Gillespie algorithm (event-driven, heap-based) | Mercier et al., PLoS Comp. Bio. 2022 |
+| **Metric Backbone (MBB)** | APSP on distance graph; keep edge (u,v) iff w(u,v) = d(u,v) | Dreveton et al., NeurIPS 2024 |
+| **MBB Rescaled (MBBr)** | MBB sparsity pattern with proximity weights rescaled to match original total | — |
+| **EffR Sparsification** | Sample edges proportional to w_e * R_e on proximity graph, reweight | Spielman & Srivastava, SIAM J. Comput. 2011 |
+| **SIR Simulation** | Continuous-time Gillespie on proximity graph (rate = beta * proximity) | Mercier et al., PLoS Comp. Bio. 2022 |
 | **Beta Calibration** | Bisection search targeting a mean infection probability of ~0.5 | — |
 
 ## Reference papers

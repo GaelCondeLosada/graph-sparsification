@@ -1,41 +1,89 @@
-"""Graph sparsification: Metric Backbone and Effective Resistance."""
+"""Graph sparsification: Metric Backbone, MBB Rescaled, and Effective Resistance.
+
+Weight conventions
+------------------
+- **Distance** (cost) weights live in (0, inf]. Used for shortest-path
+  computations (Metric Backbone).
+- **Proximity** weights live in [0, 1]. Used for Effective Resistance
+  sparsification and SIR simulation (transmission rate ~ proximity).
+
+Conversion (element-wise on nonzero entries):
+    proximity = 1 / (distance + 1)
+    distance  = 1 / proximity - 1
+"""
 
 import numpy as np
 from scipy import sparse
 from scipy.sparse.csgraph import shortest_path
 
 
-def metric_backbone(W):
-    """Compute the metric backbone of a weighted graph.
+# ── Weight-space conversions ─────────────────────────────────────────────
+
+def proximity_to_distance(proximity):
+    """Convert proximity weights to distances.
+
+    proximity in [0, 1]  ->  distance in (0, inf]
+    Formula: distance = (1 / proximity) - 1
+    """
+    return (1.0 / proximity) - 1.0
+
+
+def distance_to_proximity(distance):
+    """Convert distance weights to proximities.
+
+    distance in (0, inf]  ->  proximity in [0, 1]
+    Formula: proximity = 1 / (distance + 1)
+    """
+    return 1.0 / (distance + 1.0)
+
+
+def _convert_sparse_weights(W, convert_fn):
+    """Apply *convert_fn* element-wise to every nonzero entry of *W*.
+
+    Returns a new CSR matrix with the same sparsity pattern.
+    """
+    W = sparse.csr_matrix(W, dtype=float).copy()
+    W.data = convert_fn(W.data)
+    return W
+
+
+def to_proximity(W_dist):
+    """Convert a distance-weighted sparse matrix to proximity weights."""
+    return _convert_sparse_weights(W_dist, distance_to_proximity)
+
+
+def to_distance(W_prox):
+    """Convert a proximity-weighted sparse matrix to distance weights."""
+    return _convert_sparse_weights(W_prox, proximity_to_distance)
+
+
+# ── Metric Backbone ──────────────────────────────────────────────────────
+
+def metric_backbone(W_dist):
+    """Compute the metric backbone of a distance-weighted graph.
 
     The metric backbone is the union of all shortest paths. An edge (u,v) is
     kept iff it lies on some shortest path, i.e., its weight equals the shortest
     path distance between u and v.
 
-    For a distance/cost graph, edge (u,v) with cost c(u,v) is metric if
-    c(u,v) = d(u,v) where d is the shortest-path distance.
-
     Parameters
     ----------
-    W : scipy.sparse.csr_matrix
-        Weighted adjacency matrix (costs/distances, not similarities).
+    W_dist : scipy.sparse.csr_matrix
+        Weighted adjacency matrix with **distance** weights (costs > 0).
 
     Returns
     -------
     W_mbb : scipy.sparse.csr_matrix
-        Metric backbone adjacency matrix (same weights, fewer edges).
+        Metric backbone — same distance weights, fewer edges.
     """
-    W = sparse.csr_matrix(W)
-    n = W.shape[0]
+    W_dist = sparse.csr_matrix(W_dist)
+    n = W_dist.shape[0]
 
-    # Compute all-pairs shortest paths
-    dist = shortest_path(W, directed=False)
+    dist = shortest_path(W_dist, directed=False)
 
-    # An edge (i,j) is metric iff its weight equals the shortest path distance
-    W_coo = sparse.triu(W, format="coo")
+    W_coo = sparse.triu(W_dist, format="coo")
     rows, cols, data = W_coo.row, W_coo.col, W_coo.data
 
-    # Edge is metric if w(i,j) == d(i,j) (within floating point tolerance)
     sp_dists = dist[rows, cols]
     tol = 1e-10 * np.maximum(np.abs(data), np.abs(sp_dists))
     tol = np.maximum(tol, 1e-14)
@@ -50,6 +98,47 @@ def metric_backbone(W):
     W_mbb = W_mbb.tocsr()
 
     return W_mbb
+
+
+# ── Metric Backbone Rescaled (MBBr) ──────────────────────────────────────
+
+def metric_backbone_rescaled(W_dist):
+    """Metric Backbone with rescaled proximity weights.
+
+    1. Compute the MBB on the distance graph.
+    2. Convert both the original graph and MBB to proximity weights.
+    3. Rescale MBB proximities so that their sum equals the original
+       graph's proximity sum.
+
+    This preserves the MBB sparsity pattern while ensuring that the
+    total "connectivity budget" matches the original graph.
+
+    Parameters
+    ----------
+    W_dist : scipy.sparse.csr_matrix
+        Weighted adjacency matrix with **distance** weights.
+
+    Returns
+    -------
+    W_mbbr : scipy.sparse.csr_matrix
+        MBBr graph with **proximity** weights (rescaled).
+    """
+    W_mbb_dist = metric_backbone(W_dist)
+
+    W_prox = to_proximity(W_dist)
+    W_mbb_prox = to_proximity(W_mbb_dist)
+
+    sum_orig = W_prox.data.sum()
+    sum_mbb = W_mbb_prox.data.sum()
+
+    if sum_mbb > 0:
+        scale = sum_orig / sum_mbb
+        W_mbbr = W_mbb_prox.copy()
+        W_mbbr.data *= scale
+    else:
+        W_mbbr = W_mbb_prox.copy()
+
+    return W_mbbr
 
 
 def _compute_effective_resistances(W, n_projections=None, epsilon=0.1):

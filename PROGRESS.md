@@ -35,3 +35,18 @@
 - Weights represent distances/costs (not similarities) throughout, consistent with MBB paper conventions
 - SIR uses Gillespie algorithm matching Mercier et al. — each edge transmits at rate beta * w_e
 - EffR sparsifier targets same edge count as MBB for fair comparison in experiments
+
+## 2026-03-24: Distance/Proximity Distinction & MBBr
+
+### Completed
+- **Weight conventions**: clear separation between distance weights (costs in (0,∞], used for MBB shortest paths) and proximity weights ([0,1], used for EffR and SIR)
+- **Conversion functions** in `sparsifiers.py`: `proximity_to_distance(p) = 1/p - 1`, `distance_to_proximity(d) = 1/(d+1)`, plus sparse-matrix helpers `to_proximity()` and `to_distance()`
+- **MBBr** (`metric_backbone_rescaled()`): computes MBB on distances, converts to proximity, rescales so total proximity sum matches the original graph
+- **Notebook updated**: main loop now generates distance graphs, converts to proximity for EffR/SIR, runs all 3 sparsifiers (MBB, MBBr, EffR), 3-panel infection comparison plots, summary table with all 3 R² columns, 3-bar aggregate chart
+- **Tests**: 22 tests (added TestConversions 4 tests, TestMetricBackboneRescaled 3 tests), all passing
+
+### Decisions
+- Generators still produce distance weights — this is consistent with MBB operating on costs
+- MBBr preserves the MBB sparsity pattern but rescales proximity weights so the total matches the original graph — this ensures fair comparison of SIR dynamics
+- EffR and SIR both operate on proximity graphs — transmission rate beta * w_e uses proximity as weight
+- Previous decision "Weights represent distances/costs throughout" is **superseded**: now explicitly dual-representation with conversions
