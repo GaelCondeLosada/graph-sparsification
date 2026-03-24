@@ -215,17 +215,15 @@ def plot_infection_comparison(prob_original, prob_sparse,
     prob_original = np.asarray(prob_original)
     prob_sparse = np.asarray(prob_sparse)
 
-    # Compute R^2
+    # Mean squared error on finite pairs
     mask = np.isfinite(prob_original) & np.isfinite(prob_sparse)
     po = prob_original[mask]
     ps = prob_sparse[mask]
 
-    if len(po) > 1:
-        ss_res = np.sum((po - ps) ** 2)
-        ss_tot = np.sum((po - po.mean()) ** 2)
-        r2 = 1 - ss_res / ss_tot if ss_tot > 0 else 0.0
+    if len(po) > 0:
+        mse = float(np.mean((po - ps) ** 2))
     else:
-        r2 = 0.0
+        mse = 0.0
 
     fig, ax = plt.subplots(figsize=figsize)
     ax.grid(True, linestyle="-", alpha=0.4)
@@ -235,7 +233,7 @@ def plot_infection_comparison(prob_original, prob_sparse,
 
     ax.set_xlabel(f"{labels[0]} Node Infection Probability", fontsize=12)
     ax.set_ylabel(f"{labels[1]} Node Infection Probability", fontsize=12)
-    ax.set_title(f"Infection Probability Comparison\n$R^2 = {r2:.3f}$", fontsize=13)
+    ax.set_title(f"Infection Probability Comparison\nMSE = {mse:.5f}", fontsize=13)
     ax.set_xlim(-0.02, 1.02)
     ax.set_ylim(-0.02, 1.02)
     ax.set_aspect('equal')
@@ -279,19 +277,17 @@ def plot_multi_infection_comparison(prob_original, sparsified_probs,
         po_m = prob_original[mask]
         ps_m = ps[mask]
 
-        if len(po_m) > 1:
-            ss_res = np.sum((po_m - ps_m) ** 2)
-            ss_tot = np.sum((po_m - po_m.mean()) ** 2)
-            r2 = 1 - ss_res / ss_tot if ss_tot > 0 else 0.0
+        if len(po_m) > 0:
+            mse = float(np.mean((po_m - ps_m) ** 2))
         else:
-            r2 = 0.0
+            mse = 0.0
 
         ax.scatter(po_m, ps_m, alpha=0.4, s=40, edgecolors='none')
         ax.plot([0, 1], [0, 1], 'r--', linewidth=1)
 
         ax.set_xlabel("Original Infection Prob.", fontsize=11)
         ax.set_ylabel(f"{label} Infection Prob.", fontsize=11)
-        ax.set_title(f"{label}\n$R^2 = {r2:.3f}$", fontsize=12)
+        ax.set_title(f"{label}\nMSE = {mse:.5f}", fontsize=12)
         ax.set_xlim(-0.02, 1.02)
         ax.set_ylim(-0.02, 1.02)
         ax.set_aspect('equal')
