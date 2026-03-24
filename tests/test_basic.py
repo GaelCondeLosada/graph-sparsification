@@ -6,7 +6,7 @@ import pytest
 
 from graph_sparsification.generators import configuration_model, wsbm, wsbm_fast
 from graph_sparsification.sparsifiers import metric_backbone, effective_resistance_sparsify
-from graph_sparsification.sir import sir_simulation, sir_monte_carlo
+from graph_sparsification.sir import sir_simulation, sir_monte_carlo, calibrate_beta
 
 
 class TestConfigurationModel:
@@ -133,6 +133,24 @@ class TestSIR:
                                  initial_infected=[0], n_runs=10, rng=42)
         assert result['infection_prob'][0] == 1.0  # always infected
         assert len(result['all_arrival_times']) == 10
+
+
+class TestCalibrateBeta:
+    def test_converges(self):
+        W = configuration_model([5] * 50, rng=42)
+        beta, info = calibrate_beta(
+            W, gamma=1.0, target_mean_infection=0.5, target_range=(0.2, 0.8),
+            n_calibration_runs=15, rng=42, verbose=False
+        )
+        assert 0.0 < beta < 10.0
+        assert 0.1 < info['mean_infection'] < 0.9
+
+    def test_returns_history(self):
+        W = configuration_model([5] * 40, rng=0)
+        _, info = calibrate_beta(W, n_calibration_runs=10, rng=0,
+                                 max_iterations=5, verbose=False)
+        assert len(info['history']) > 0
+        assert 'infection_prob' in info
 
 
 if __name__ == "__main__":

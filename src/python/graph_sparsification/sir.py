@@ -245,3 +245,124 @@ def sir_monte_carlo(W, beta, gamma, initial_infected=None, n_runs=100,
         'mean_arrival_time': mean_arrival_time,
         'all_arrival_times': all_arrival_times,
     }
+
+
+def calibrate_beta(W, gamma=1.0, target_mean_infection=0.5,
+                   target_range=(0.3, 0.7), initial_infected=None,
+                   n_calibration_runs=50, t_max=20.0, rng=None,
+                   beta_min=1e-4, beta_max=10.0, max_iterations=15,
+                   verbose=True):
+    """Find a beta that produces an interesting spread of infection probabilities.
+
+    Uses bisection search on beta to target a mean infection probability near
+    `target_mean_infection`. The goal is to avoid the two degenerate regimes:
+    - beta too low: almost no one gets infected (boring)
+    - beta too high: everyone gets infected with probability ~1 (no variance)
+
+    A good range is when mean infection probability is around 0.4-0.6 and
+    the standard deviation across nodes is high (heterogeneous spread).
+
+    Parameters
+    ----------
+    W : scipy.sparse.csr_matrix
+        Weighted adjacency matrix.
+    gamma : float
+        Recovery rate.
+    target_mean_infection : float
+        Desired mean infection probability across nodes (default 0.5).
+    target_range : tuple of float
+        Acceptable range for mean infection probability.
+    initial_infected : array-like or None
+        Initially infected nodes. If None, picks highest-degree node.
+    n_calibration_runs : int
+        Number of SIR runs per beta evaluation (fewer = faster but noisier).
+    t_max : float
+        Maximum simulation time.
+    rng : np.random.Generator or int or None
+    beta_min, beta_max : float
+        Search bounds for beta.
+    max_iterations : int
+        Maximum bisection iterations.
+    verbose : bool
+        Print progress.
+
+    Returns
+    -------
+    beta : float
+        Calibrated beta value.
+    info : dict
+        - 'infection_prob': infection probabilities at calibrated beta
+        - 'mean_infection': mean infection probability
+        - 'std_infection': std of infection probabilities
+        - 'history': list of (beta, mean_infection) tried
+    """
+    if isinstance(rng, (int, np.integer)):
+        rng = np.random.default_rng(rng)
+    else:
+        rng = np.random.default_rng(rng)
+
+    W = sparse.csr_matrix(W, dtype=float)
+    n = W.shape[0]
+
+    if initial_infected is None:
+        degrees = np.array(W.sum(axis=1)).ravel()
+        initial_infected = [int(np.argmax(degrees))]
+
+    lo, hi = beta_min, beta_max
+    history = []
+    best_beta = (lo + hi) / 2
+    best_probs = None
+    best_distance = float('inf')
+
+    for iteration in range(max_iterations):
+        beta = (lo + hi) / 2
+
+        result = sir_monte_carlo(W, beta, gamma, initial_infected,
+                                 n_runs=n_calibration_runs, t_max=t_max, rng=rng)
+        probs = result['infection_prob']
+        mean_inf = probs.mean()
+        std_inf = probs.std()
+
+        history.append((beta, mean_inf))
+        distance = abs(mean_inf - target_mean_infection)
+
+        if verbose:
+            print(f"  iter {iteration+1:2d}: beta={beta:.6f}, "
+                  f"mean_inf={mean_inf:.3f}, std={std_inf:.3f}")
+
+        if distance < best_distance:
+            best_distance = distance
+            best_beta = beta
+            best_probs = probs.copy()
+
+        # Check if we're in the target range
+        if target_range[0] <= mean_inf <= target_range[1]:
+            if verbose:
+                print(f"  -> Converged: beta={beta:.6f}")
+            return beta, {
+                'infection_prob': probs,
+                'mean_infection': mean_inf,
+                'std_infection': std_inf,
+                'history': history,
+            }
+
+        # Bisection: if mean infection is too high, reduce beta
+        if mean_inf > target_mean_infection:
+            hi = beta
+        else:
+            lo = beta
+
+        # Early stop if bounds are very tight
+        if (hi - lo) / max(hi, 1e-10) < 0.01:
+            break
+
+    if verbose:
+        mean_inf = best_probs.mean() if best_probs is not None else 0.0
+        print(f"  -> Best found: beta={best_beta:.6f}, mean_inf={mean_inf:.3f}")
+
+    return best_beta, {
+        'infection_prob': best_probs,
+        'mean_infection': best_probs.mean() if best_probs is not None else 0.0,
+        'std_infection': best_probs.std() if best_probs is not None else 0.0,
+        'history': history,
+    }

@@ -20,6 +20,16 @@
 - **Notebook** (`notebooks/experiments.ipynb`): 4 experiments — Configuration Model, wSBM k=3, Planted Partition k=2, Dense Configuration Model. All verified running end-to-end.
 - **Tests**: 13 tests covering all modules, all passing
 
+## 2026-03-24: Improvements
+
+### Completed
+- **Beta calibration** (`calibrate_beta()` in `sir.py`): bisection search to find beta that produces mean infection probability ~0.5 with good spread across nodes. Avoids degenerate regimes.
+- **Notebook path fix**: added `sys.path` fallback so notebook works without `pip install -e .`
+- **Notebook uses calibration**: each experiment auto-calibrates beta instead of hardcoded values
+- **C++ build verified**: clean build from scratch works; documented `CXX=g++` workaround for compiler detection issues
+- **README**: setup instructions, C++ compilation guide, quick start with code examples, algorithm summary table
+- **Tests**: 15 tests (added calibrate_beta tests), all passing
+
 ### Decisions
 - Used exact Laplacian pseudoinverse for EffR (sufficient for n < 2000 research-scale graphs; random projection path available for larger)
 - Weights represent distances/costs (not similarities) throughout, consistent with MBB paper conventions
