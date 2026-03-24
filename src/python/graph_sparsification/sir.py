@@ -247,10 +247,10 @@ def sir_monte_carlo(W, beta, gamma, initial_infected=None, n_runs=100,
     }
 
 
-def calibrate_beta(W, gamma=1.0, target_mean_infection=0.5,
-                   target_range=(0.3, 0.7), initial_infected=None,
-                   n_calibration_runs=50, t_max=20.0, rng=None,
-                   beta_min=1e-4, beta_max=10.0, max_iterations=15,
+def calibrate_beta(W, gamma=1.0, target_mean_infection=0.6,
+                   target_range=(0.45, 0.7), initial_infected=None,
+                   n_calibration_runs=20, t_max=100.0, rng=None,
+                   beta_min=1e-4, beta_max=10.0, max_iterations=30,
                    verbose=True):
     """Find a beta that produces an interesting spread of infection probabilities.
 
