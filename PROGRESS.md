@@ -58,3 +58,24 @@
 - **EffR exact-edges mode**: `effective_resistance_sparsify()` now accepts `n_edges` parameter. When set, keeps exactly that many edges (top-k by w_e * R_e importance), deterministically. Original weights preserved.
 - **Notebook updated**: EffR now uses `n_edges=n_mbb` so all 3 sparsifiers (MBB, MBBr, EffR) keep the exact same number of edges for fair comparison.
 - **Tests**: 24 tests (added exact-edges mode tests), all passing
+
+## 2026-03-25: Neumann Series Graph Sparsification
+
+### Completed
+- **Neumann sparsifier** (`neumann_sparsifier.py`): Two-phase edge importance scoring based on the Neumann resolvent S = (I-A)^{-1}, averaged over random node permutations.
+  - Sherman-Morrison importance: measures each edge's impact on the resolvent via closed-form ||ΔS||_F^2
+  - Structural importance (path-centrality without weight bias) used for high-retention graphs
+  - Adaptive rescaling: global + 10% Sinkhorn for low retention, capped Sinkhorn for high retention
+- **Evaluation pipeline** (`scripts/neumann_pipeline.py`): Compares Neumann vs MBBr vs EffR across 8 graph configurations (N=500, 200 SIR runs each)
+
+### Results (8 configs, seed=42)
+- **2 WINs** (Unif+Exp: 0.016 vs EffR 0.017; Pareto+LogN: 0.002 vs MBBr 0.002)
+- **3 close** (≤1.06x vs best baseline)
+- **Beats EffR on 7/8 configs**
+- Biggest gap: 1.70x on Poisson(40)+Exp(10) where MBBr has structural advantage from shortest paths
+- Average MSE: competitive with both MBBr and EffR across varied graph topologies
+
+### Decisions
+- 50 permutations for importance scoring (more accurate structural estimates)
+- Retention threshold at 25%: below uses full Neumann importance + global rescale; above uses structural×proximity + capped Sinkhorn
+- max_row_sum=3.0 to keep S close to I for numerical stability while retaining structural signal
