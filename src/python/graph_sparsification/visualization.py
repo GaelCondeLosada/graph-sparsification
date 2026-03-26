@@ -130,6 +130,164 @@ def _kmeans(X, k, max_iter=50, n_init=5):
 
 # ── Adjacency matrix plots ────────────────────────────────────────────
 
+# ── Generic matrix heatmaps ───────────────────────────────────────────
+
+
+def plot_matrices(
+    matrices,
+    titles=None,
+    suptitle=None,
+    figsize=None,
+    cmap="viridis",
+    vmin=None,
+    vmax=None,
+    share_color_scale=False,
+    colorbar_label=None,
+    interpolation="nearest",
+    grey_nonpositive=True,
+    nonpositive_color="#bdbdbd",
+):
+    """Plot one or more arbitrary 2D matrices as heatmaps.
+
+    Parameters
+    ----------
+    matrices : np.ndarray or sequence of array-like
+        A single matrix of shape ``(n, m)`` or a list/tuple of 2D arrays.
+    titles : sequence of str or None
+        Title for each panel. If ``None``, panels are untitled.
+    suptitle : str or None
+        Figure super-title.
+    figsize : tuple or None
+        ``(width, height)`` in inches. If ``None``, chosen from the number of
+        panels.
+    cmap : str or matplotlib Colormap
+        Colormap for ``imshow``.
+    vmin, vmax : float or None
+        Color scale limits for **strictly positive** entries. If
+        ``share_color_scale`` is True and either is missing, limits are taken
+        from the min/max of positive finite values across all matrices.
+        Otherwise, when both are unset, each panel uses its own positive min/max.
+    share_color_scale : bool
+        If True and ``vmin``/``vmax`` are not both set explicitly, use a common
+        min/max over all **positive** finite entries across matrices.
+    colorbar_label : str or None
+        Label for each colorbar when not ``None``.
+    interpolation : str
+        ``imshow`` interpolation (default ``"nearest"`` avoids smoothing).
+    grey_nonpositive : bool
+        If True (default), entries that are zero, negative, or non-finite are
+        drawn in ``nonpositive_color`` and excluded from the colormap scale.
+    nonpositive_color : str
+        Matplotlib color for masked (non-positive / non-finite) cells.
+
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+    axes : ndarray of Axes
+        Shape ``(n_panels,)``; use ``axes.ravel()`` for iteration.
+    """
+    if isinstance(matrices, np.ndarray) and matrices.ndim == 2:
+        mats = [np.asarray(matrices, dtype=float)]
+    else:
+        mats = [np.asarray(M, dtype=float) for M in matrices]
+
+    for i, M in enumerate(mats):
+        if M.ndim != 2:
+            raise ValueError(f"Matrix {i} has shape {M.shape}; expected 2D.")
+
+    n = len(mats)
+    if titles is None:
+        titles = [None] * n
+    else:
+        titles = list(titles)
+        if len(titles) != n:
+            raise ValueError(f"Got {n} matrices but {len(titles)} titles.")
+
+    if figsize is None:
+        figsize = (max(4.0, 4.2 * n), 4.2)
+
+    fig, axes = plt.subplots(1, n, figsize=figsize, dpi=500)
+    if n == 1:
+        axes = np.array([axes])
+
+    cmap_plot = plt.get_cmap(cmap).copy()
+    if grey_nonpositive:
+        cmap_plot.set_bad(nonpositive_color)
+
+    def _positive_mask(M):
+        return np.isfinite(M) & (M > 0)
+
+    shared_vmin, shared_vmax = vmin, vmax
+    if share_color_scale and (shared_vmin is None or shared_vmax is None):
+        pos_blocks = [M[_positive_mask(M)] for M in mats]
+        stacked = np.concatenate([b for b in pos_blocks if b.size])
+        if stacked.size:
+            if shared_vmin is None:
+                shared_vmin = float(stacked.min())
+            if shared_vmax is None:
+                shared_vmax = float(stacked.max())
+        elif shared_vmin is None and shared_vmax is None:
+            shared_vmin, shared_vmax = 0.0, 1.0
+
+    if (
+        shared_vmin is not None
+        and shared_vmax is not None
+        and abs(shared_vmax - shared_vmin) < 1e-15
+    ):
+        shared_vmax = shared_vmin + 1.0
+
+    for ax, M, title in zip(axes, mats, titles):
+        if grey_nonpositive:
+            display = np.where(_positive_mask(M), M, np.nan)
+        else:
+            display = M
+
+        v0, v1 = shared_vmin, shared_vmax
+        if not share_color_scale:
+            v0, v1 = vmin, vmax
+            if v0 is None and v1 is None:
+                pm = M[_positive_mask(M)]
+                if pm.size:
+                    v0, v1 = float(pm.min()), float(pm.max())
+                else:
+                    v0, v1 = 0.0, 1.0
+            elif v0 is None or v1 is None:
+                pm = M[_positive_mask(M)]
+                if pm.size:
+                    if v0 is None:
+                        v0 = float(pm.min())
+                    if v1 is None:
+                        v1 = float(pm.max())
+                else:
+                    v0 = v0 if v0 is not None else 0.0
+                    v1 = v1 if v1 is not None else 1.0
+
+        if v0 is not None and v1 is not None and abs(v1 - v0) < 1e-15:
+            v1 = v0 + 1.0
+
+        im = ax.imshow(
+            display,
+            aspect="equal",
+            cmap=cmap_plot,
+            vmin=v0,
+            vmax=v1,
+            interpolation=interpolation,
+        )
+        if title:
+            ax.set_title(title, fontsize=12)
+        ax.set_xlabel("Column index")
+        ax.set_ylabel("Row index")
+        cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+        if colorbar_label is not None:
+            cbar.set_label(colorbar_label)
+
+    if suptitle:
+        fig.suptitle(suptitle, fontsize=13, y=1.02)
+
+    plt.tight_layout()
+    return fig, axes
+
+
 def plot_adjacency_comparison(W_original, W_sparse, labels=("Original", "Sparsified"),
                               communities="auto", figsize=(14, 6), log_scale=True):
     """Plot adjacency matrices of two graphs side by side.
