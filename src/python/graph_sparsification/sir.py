@@ -27,6 +27,35 @@ def _initial_from_fraction(frac, n, rng):
     return rng.choice(n, size=k, replace=False).astype(np.int64, copy=False)
 
 
+def _scalar_float_fraction(x):
+    """If ``x`` is a scalar-like float in (0, 1], return ``float(x)``; else ``None``.
+
+    Accepts Python ``float``, any ``numpy.floating`` (``float16``, ``float32``,
+    ``float64``, ``longdouble``, …), and floating 0-d arrays or shape ``(1,)``
+    arrays (e.g. ``np.array(0.01)``, ``np.array([0.01])``, ``[0.01]``).
+
+    Integer scalars are *not* treated as fractions so a single node index ``1``
+    stays valid. Values outside ``(0, 1]`` are not fractions (fall through to
+    index handling).
+    """
+    if isinstance(x, (float, np.floating)):
+        v = float(x)
+        return v if 0.0 < v <= 1.0 else None
+
+    if not isinstance(x, np.ndarray):
+        x = np.asarray(x)
+
+    if x.shape == () and np.issubdtype(x.dtype, np.floating):
+        v = float(x.item())
+        return v if 0.0 < v <= 1.0 else None
+
+    if x.size == 1 and np.issubdtype(x.dtype, np.floating):
+        v = float(x.reshape(-1)[0])
+        return v if 0.0 < v <= 1.0 else None
+
+    return None
+
+
 def sir_simulation(W, beta, gamma, initial_infected=None, t_max=20.0,
                    rng=None, use_cpp=True):
     """Run a single SIR simulation on a weighted graph.
@@ -45,8 +74,9 @@ def sir_simulation(W, beta, gamma, initial_infected=None, t_max=20.0,
         Recovery rate.
     initial_infected : array-like, float, or None
         Indices of initially infected nodes. If None, a single random node.
-        If a float in (0, 1], ``round(frac * n)`` nodes (clamped to [1, n])
-        are chosen uniformly at random without replacement for this run.
+        If a scalar-like float in (0, 1] (Python ``float``, ``numpy.floating``,
+        or a 0-d / length-1 float array), ``round(frac * n)`` nodes (clamped to
+        [1, n]) are chosen uniformly at random without replacement for this run.
     t_max : float
         Maximum simulation time.
     rng : np.random.Generator or int or None
@@ -71,10 +101,13 @@ def sir_simulation(W, beta, gamma, initial_infected=None, t_max=20.0,
 
     if initial_infected is None:
         initial_infected = np.array([int(rng.integers(n))], dtype=np.int64)
-    elif isinstance(initial_infected, (float, np.floating)):
-        initial_infected = _initial_from_fraction(initial_infected, n, rng)
     else:
-        initial_infected = np.asarray(initial_infected, dtype=int)
+        frac = _scalar_float_fraction(initial_infected)
+        if frac is not None:
+            initial_infected = _initial_from_fraction(frac, n, rng)
+        else:
+            # C++ expects a 1-D index vector; atleast_1d fixes scalar indices.
+            initial_infected = np.atleast_1d(np.asarray(initial_infected, dtype=int))
 
     if use_cpp and _HAS_CPP:
         return _sir_cpp_wrapper(W, beta, gamma, initial_infected, t_max, rng)
@@ -206,8 +239,9 @@ def sir_monte_carlo(W, beta, gamma, initial_infected=None, n_runs=100,
     beta, gamma : float
         SIR parameters.
     initial_infected : array-like, float, or None
-        Initially infected nodes, or a fraction in (0, 1] (re-sampled each run;
-        see ``sir_simulation``).
+        Initially infected nodes, or a scalar-like float in (0, 1] as a
+        fraction of ``n`` (re-sampled each run; supports all NumPy float dtypes
+        and 0-d / shape ``(1,)`` float arrays; see ``sir_simulation``).
     n_runs : int
         Number of independent simulations.
     t_max : float
@@ -287,7 +321,8 @@ def calibrate_beta(W, gamma=1.0, target_range=(0.45, 0.6), initial_infected=None
         (inclusive). If ``low > high``, the bounds are swapped.
     initial_infected : array-like, float, or None
         Initially infected nodes. If None, picks highest-degree node.
-        If a float in (0, 1], fraction of nodes at each evaluation (see
+        If a scalar-like float in (0, 1], fraction of nodes at each evaluation
+        (all NumPy float dtypes and 0-d / ``(1,)`` float arrays; see
         ``sir_simulation``).
     n_calibration_runs : int
         Number of SIR runs per beta evaluation (fewer = faster but noisier).
