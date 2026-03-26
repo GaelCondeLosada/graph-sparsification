@@ -79,3 +79,22 @@
 - 50 permutations for importance scoring (more accurate structural estimates)
 - Retention threshold at 25%: below uses full Neumann importance + global rescale; above uses structural×proximity + capped Sinkhorn
 - max_row_sum=3.0 to keep S close to I for numerical stability while retaining structural signal
+
+## 2026-03-26: Proximity Transform & Modular Pipeline
+
+### Completed
+- **85x speedup**: Replaced `np.linalg.inv` with `scipy.linalg.solve_triangular` since (I-A) is upper-triangular. Per-config time: ~520s -> ~6s (N=500).
+- **Proximity-based transform** (default): Use `p = 1/(d+1)` directly as Neumann weights instead of `exp(-d/tau)`. Robust to infinite-mean distance distributions — fixes catastrophic LogLogN(2,0.8) failures (53-136x -> 1.45x).
+- **Modular pipeline** (`neumann_sparsifier.py`): Three pluggable stages:
+  1. **Transform**: `transform_proximity` (default), `transform_exp`
+  2. **Scoring**: `score_adaptive` (default), `score_full_importance`, `score_structural_x_prox`, `score_structural_only`
+  3. **Rescaling**: `rescale_adaptive` (default), `rescale_global_only`, `rescale_sinkhorn_only`, `rescale_global_plus_sinkhorn`
+- **Evaluation script** (`scripts/neumann_pipeline.py`): CLI with `--configs diverse5|all`, `--n-nodes`, `--n-sir`, JSON output.
+- **Interactive notebook** (`playground/gael/neumann_exploration.ipynb`): Single-config exploration, transform comparison, grid search visualization.
+
+### Results (5 diverse configs, proximity transform)
+- N=500: 3/5 WINs, beats EffR 3/5, LogLogN(2,0.8) at 1.45x (was 20x)
+- N=1000: 2/5 WINs, **beats EffR 5/5**, LogLogN(2,0.8) at 1.80x
+
+### Key Insight: Why LogLogN(2,0.8) Broke
+LogLogN(2,0.8) = exp(LogNormal(2,0.8)) has **infinite expected value**. The exp(-d/tau) transform calibrates tau from mean distance (~10^88), making exp(-d/tau) ≈ 1 for all edges — all distance information destroyed. Proximity p=1/(d+1) maps any distance to [0,1], preserving ordinal structure regardless of distribution tail.

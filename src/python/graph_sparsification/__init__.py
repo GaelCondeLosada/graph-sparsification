@@ -12,3 +12,4 @@ from .sparsifiers import (
 )
 from .sir import sir_simulation, sir_monte_carlo, calibrate_beta
 from .visualization import plot_adjacency_comparison, plot_infection_comparison
+from .neumann_sparsifier import neumann_sparsify
