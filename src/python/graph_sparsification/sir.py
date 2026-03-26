@@ -17,6 +17,16 @@ except ImportError:
     _HAS_CPP = False
 
 
+def _initial_from_fraction(frac, n, rng):
+    """Choose unique initially infected nodes from fraction ``frac`` of ``n``."""
+    frac = float(frac)
+    if not (0.0 < frac <= 1.0):
+        raise ValueError("initial_infected as fraction must satisfy 0 < frac <= 1")
+    k = int(round(frac * n))
+    k = int(np.clip(k, 1, n))
+    return rng.choice(n, size=k, replace=False).astype(np.int64, copy=False)
+
+
 def sir_simulation(W, beta, gamma, initial_infected=None, t_max=20.0,
                    rng=None, use_cpp=True):
     """Run a single SIR simulation on a weighted graph.
@@ -33,8 +43,10 @@ def sir_simulation(W, beta, gamma, initial_infected=None, t_max=20.0,
         Infection rate per unit edge weight.
     gamma : float
         Recovery rate.
-    initial_infected : array-like or None
+    initial_infected : array-like, float, or None
         Indices of initially infected nodes. If None, a single random node.
+        If a float in (0, 1], ``round(frac * n)`` nodes (clamped to [1, n])
+        are chosen uniformly at random without replacement for this run.
     t_max : float
         Maximum simulation time.
     rng : np.random.Generator or int or None
@@ -58,8 +70,11 @@ def sir_simulation(W, beta, gamma, initial_infected=None, t_max=20.0,
     n = W.shape[0]
 
     if initial_infected is None:
-        initial_infected = [rng.integers(n)]
-    initial_infected = np.asarray(initial_infected, dtype=int)
+        initial_infected = np.array([int(rng.integers(n))], dtype=np.int64)
+    elif isinstance(initial_infected, (float, np.floating)):
+        initial_infected = _initial_from_fraction(initial_infected, n, rng)
+    else:
+        initial_infected = np.asarray(initial_infected, dtype=int)
 
     if use_cpp and _HAS_CPP:
         return _sir_cpp_wrapper(W, beta, gamma, initial_infected, t_max, rng)
@@ -190,8 +205,9 @@ def sir_monte_carlo(W, beta, gamma, initial_infected=None, n_runs=100,
         Weighted adjacency matrix.
     beta, gamma : float
         SIR parameters.
-    initial_infected : array-like or None
-        Initially infected nodes.
+    initial_infected : array-like, float, or None
+        Initially infected nodes, or a fraction in (0, 1] (re-sampled each run;
+        see ``sir_simulation``).
     n_runs : int
         Number of independent simulations.
     t_max : float
@@ -247,7 +263,7 @@ def sir_monte_carlo(W, beta, gamma, initial_infected=None, n_runs=100,
     }
 
 
-def calibrate_beta(W, gamma=1.0, target_range=(0.6, 0.7), initial_infected=None,
+def calibrate_beta(W, gamma=1.0, target_range=(0.45, 0.6), initial_infected=None,
                    n_calibration_runs=20, t_max=100.0, rng=None,
                    beta_min=1e-4, beta_max=10.0, max_iterations=30,
                    verbose=True, start_beta=1.0):
@@ -269,8 +285,10 @@ def calibrate_beta(W, gamma=1.0, target_range=(0.6, 0.7), initial_infected=None,
     target_range : tuple of float
         Acceptable interval ``(low, high)`` for mean infection probability
         (inclusive). If ``low > high``, the bounds are swapped.
-    initial_infected : array-like or None
+    initial_infected : array-like, float, or None
         Initially infected nodes. If None, picks highest-degree node.
+        If a float in (0, 1], fraction of nodes at each evaluation (see
+        ``sir_simulation``).
     n_calibration_runs : int
         Number of SIR runs per beta evaluation (fewer = faster but noisier).
     t_max : float
