@@ -282,7 +282,15 @@ def effective_resistance_sparsify(W, q=None, fraction=0.1, n_edges=None,
 
     # ── Exact-edges mode ──────────────────────────────────────────────
     if n_edges is not None:
-        k = min(n_edges, m)
+        # Edges with zero importance get p=0 and cannot be drawn with
+        # replace=False; k must not exceed the number of positive probs.
+        n_pos = int(np.count_nonzero(probs > 0))
+        if n_pos == 0:
+            probs = np.ones(m) / m
+            n_pos = m
+        k = int(min(n_edges, m, n_pos))
+        if k == 0:
+            return sparse.csr_matrix((n, n), dtype=float)
         # Sample k distinct edges without replacement, prob ∝ w_e * R_e
         selected = rng.choice(m, size=k, replace=False, p=probs)
 
