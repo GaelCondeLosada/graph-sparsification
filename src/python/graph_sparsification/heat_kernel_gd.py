@@ -1,12 +1,12 @@
-"""Heat-kernel matching sparsification via gradient descent (hard top-k + STE).
+"""Heat-kernel matching sparsification via gradient descent.
 
-Implements the procedure from §2.3–2.6: minimize diagonal MSE between
-``exp(-t L_orig)`` and ``exp(-t L_sparse)`` using Adam on edge logits, hard
-top-m selection with a straight-through estimator (STE), and proximity
-rescaling so the sparse graph preserves total edge weight.
+Matches the C2 implementation in ``heat_kernel_GD_example.py`` (``run_c2_heat_kernel``):
+hard top-k by threshold with detached mask (STE), proximity rescaling to preserve
+upper-triangle mass, ``H(t)=exp(-tL)`` diagonal MSE, Adam + cosine LR schedule,
+and logit initialization from current edge proximities.
 
-By default, if ``t`` is not passed, use ``t = gamma / beta`` when both SIR-style
-``beta`` and ``gamma`` are provided (otherwise ``t = 1``).
+Heat-kernel time: pass ``t`` explicitly, or set ``t = gamma / beta`` from ``beta`` and
+``gamma``, or default ``t = 1.0``.
 """
 
 from __future__ import annotations
@@ -24,49 +24,12 @@ except ImportError as e:  # pragma: no cover
     ) from e
 
 
-def _laplacian(W: torch.Tensor) -> torch.Tensor:
-    """Unnormalized Laplacian L = D - W (symmetric W)."""
-    d = W.sum(dim=-1)
-    return torch.diag(d) - W
-
-
-def _adjacency_from_upper_edges(
-    n: int,
-    ei: torch.Tensor,
-    ej: torch.Tensor,
-    w_upper: torch.Tensor,
-) -> torch.Tensor:
-    """Build symmetric adjacency from upper-triangle edge list (one entry per undirected edge)."""
-    W = torch.zeros((n, n), dtype=w_upper.dtype, device=w_upper.device)
-    W[ei, ej] = w_upper
-    W[ej, ei] = w_upper
-    return W
-
-
-def _ste_hard_topk_weights(
-    pi: torch.Tensor,
-    m: int,
-    sum_orig: torch.Tensor,
-) -> torch.Tensor:
-    """Hard top-m by proximity, then rescale so sum of sparse weights equals sum_orig.
-
-    Forward uses hard selection + rescaling. STE: ``pi + (w_fwd - pi).detach()`` so
-    backward flows through soft ``pi`` as if the selection were identity.
-    """
-    e = pi.numel()
-    k = min(int(m), e)
-    if k <= 0:
-        return torch.zeros_like(pi)
-
-    _, idx = torch.topk(pi, k)
-    w_hard = torch.zeros_like(pi)
-    w_hard.scatter_(0, idx, pi[idx])
-
-    denom = w_hard.sum().clamp_min(torch.finfo(pi.dtype).eps)
-    scale = sum_orig / denom
-    w_fwd = w_hard * scale
-
-    return pi + (w_fwd - pi).detach()
+def compute_heat_kernel(W: torch.Tensor, t: float) -> torch.Tensor:
+    """H(t) = exp(-t * L) where L = D - W (same as ``heat_kernel_GD_example``)."""
+    d = W.sum(dim=1)
+    D = torch.diag(d)
+    L = D - W
+    return torch.matrix_exp(-t * L)
 
 
 def heat_kernel_gd_sparsify(
@@ -82,46 +45,33 @@ def heat_kernel_gd_sparsify(
     dtype: torch.dtype = torch.float64,
     rng_seed: int | None = None,
     return_history: bool = False,
+    grad_clip: float = 1.0,
 ) -> tuple[sparse.csr_matrix, dict[str, Any]]:
-    """Sparsify an undirected weighted graph by GD on the heat-kernel diagonal.
+    """Sparsify using the same GD loop as ``run_c2_heat_kernel`` in ``heat_kernel_GD_example.py``.
 
     Parameters
     ----------
     W_orig
-        Symmetric nonnegative proximity / adjacency (``scipy.sparse`` or dense ``numpy``).
+        Symmetric nonnegative proximity weights.
     m
-        Number of undirected edges to keep (upper-triangle count).
+        Target number of undirected edges (upper-triangle count); clamped to available candidates.
     t
-        Heat-kernel time. If ``None``, set from SIR parameters as ``t = gamma / beta``
-        when both ``beta`` and ``gamma`` are given; otherwise defaults to ``1.0``.
+        Heat time for ``exp(-tL)``. If ``None``, use ``gamma/beta`` when both given, else ``1.0``.
     beta, gamma
-        SIR-style rates; when ``t`` is ``None`` and both are set, ``t = gamma / beta``
-        (mean infectious period in units where infection is scaled by ``beta`` on edge weights).
-    n_steps
-        Adam steps (default 300 as in the write-up).
-    lr
-        Adam learning rate (default 0.05).
+        When ``t`` is ``None`` and both set: ``t = gamma / beta`` (requires ``beta > 0``).
+    n_steps, lr
+        Adam steps and learning rate (example often uses 100 and 0.05).
     edge_candidates
-        Optional ``(2, E)`` int array of candidate undirected edges ``(i, j)`` with ``i < j``.
-        Default: all upper-triangular positions where ``W_orig > 0``.
-    device
-        Torch device; default CPU.
-    dtype
-        Floating dtype for optimization (``float64`` recommended for ``matrix_exp``).
+        Optional ``(2, E)`` or ``(E, 2)`` with ``i < j``; restricts optimization to those pairs
+        that also have positive weight in ``W_orig``.
+    device, dtype
+        Torch device and floating dtype (``float64`` recommended).
     rng_seed
-        RNG seed for initial logits.
+        Passed to ``torch.manual_seed`` before optimization (example does not use this).
     return_history
         If True, ``info['loss_history']`` lists the loss each step.
-
-    Returns
-    -------
-    W_sparse : scipy.sparse.csr_matrix
-        Symmetric sparse weights on the selected top-``m`` edges after training,
-        **rescaled** so total edge weight matches the original (sum over upper triangle).
-    info : dict
-        ``final_loss``, ``loss_history`` (optional), ``edge_index`` ``(2, m)`` numpy int64
-        for chosen edges, ``sum_orig``, ``sum_sparse`` (post-rescale, should match),
-        and ``t`` (heat-kernel time used).
+    grad_clip
+        Clamp ``param_logit.grad`` to ``[-grad_clip, grad_clip]`` after each backward (default 1.0).
     """
     if m < 0:
         raise ValueError("m must be nonnegative")
@@ -144,11 +94,32 @@ def heat_kernel_gd_sparsify(
     W_csr = (W_csr + W_csr.T) * 0.5
     W_csr.eliminate_zeros()
 
-    if edge_candidates is None:
-        tri = sparse.triu(W_csr, k=1, format="coo")
-        ei_np = tri.row.astype(np.int64, copy=False)
-        ej_np = tri.col.astype(np.int64, copy=False)
-    else:
+    W_full_np = np.asarray(W_csr.toarray(), dtype=np.float64)
+    sum_orig_full_triu = float(sparse.triu(W_csr, k=1).sum())
+
+    if m == 0:
+        W_out = sparse.csr_matrix((n, n), dtype=float)
+        info: dict[str, Any] = {
+            "final_loss": float("nan"),
+            "edge_index": np.zeros((2, 0), dtype=np.int64),
+            "sum_orig": sum_orig_full_triu,
+            "sum_sparse": 0.0,
+            "t": t_use,
+        }
+        if return_history:
+            info["loss_history"] = []
+        return W_out, info
+
+    dev = torch.device(device or "cpu")
+    tor_dtype = dtype
+
+    if rng_seed is not None:
+        torch.manual_seed(int(rng_seed))
+
+    W_prox_t = torch.tensor(W_full_np, dtype=tor_dtype, device=dev)
+    mask_upper = torch.triu(W_prox_t > 0, diagonal=1)
+
+    if edge_candidates is not None:
         ec = np.asarray(edge_candidates, dtype=np.int64)
         if ec.ndim != 2:
             raise ValueError("edge_candidates must be 2D")
@@ -158,96 +129,112 @@ def heat_kernel_gd_sparsify(
             ei_np, ej_np = ec[:, 0], ec[:, 1]
         else:
             raise ValueError("edge_candidates must have shape (2, E) or (E, 2)")
-        if np.any(ei_np >= n) or np.any(ej_np >= n):
-            raise ValueError("edge_candidates indices out of range")
-        if np.any(ei_np >= ej_np):
-            raise ValueError("edge_candidates must use i < j for each undirected edge")
+        cand_mask = torch.zeros((n, n), dtype=torch.bool, device=dev)
+        for ii in range(ei_np.size):
+            cand_mask[int(ei_np[ii]), int(ej_np[ii])] = True
+        mask_upper = mask_upper & cand_mask
 
-    if ei_np.size == 0:
-        raise ValueError("no candidate edges")
+    n_upper = int(mask_upper.sum().item())
+    if n_upper == 0:
+        raise ValueError("no candidate edges (upper triangle with positive weight)")
 
-    w0 = np.asarray(W_csr[ei_np, ej_np]).ravel().astype(np.float64, copy=False)
-    sum_orig = float(np.sum(w0))
+    n_budget = min(int(m), n_upper)
 
-    if m == 0:
+    with torch.no_grad():
+        H_target = compute_heat_kernel(W_prox_t, t=t_use)
+        diag_target = H_target.diagonal()
+
+    with torch.no_grad():
+        p_init = W_prox_t[mask_upper].clamp(1e-6, 1.0 - 1e-6)
+        logit_init = torch.logit(p_init)
+
+    param_logit = logit_init.clone().detach().requires_grad_(True)
+    opt = torch.optim.Adam([param_logit], lr=float(lr))
+    sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=int(n_steps))
+
+    rows_idx, cols_idx = torch.where(mask_upper)
+    orig_total = float(W_prox_t[mask_upper].sum().item())
+
+    loss_history: list[float] = []
+    for _step in range(int(n_steps)):
+        opt.zero_grad(set_to_none=True)
+
+        prox_vals = torch.sigmoid(param_logit)
+
+        if prox_vals.numel() > n_budget:
+            threshold = torch.topk(prox_vals, n_budget).values[-1].item()
+            hard_mask = (prox_vals >= threshold).float().detach()
+        else:
+            hard_mask = torch.ones_like(prox_vals)
+
+        prox_sparse = prox_vals * hard_mask
+
+        sparse_total = prox_sparse.sum() + 1e-10
+        prox_rescaled = prox_sparse * (orig_total / float(sparse_total.item()))
+
+        W_sparse = torch.zeros((n, n), dtype=tor_dtype, device=dev)
+        W_sparse[rows_idx, cols_idx] = prox_rescaled
+        W_sparse = W_sparse + W_sparse.T
+
+        H_sparse = compute_heat_kernel(W_sparse, t=t_use)
+        diag_sparse = H_sparse.diagonal()
+        loss = (diag_target - diag_sparse).pow(2).sum()
+
+        loss.backward()
+
+        with torch.no_grad():
+            if param_logit.grad is not None:
+                param_logit.grad.clamp_(-float(grad_clip), float(grad_clip))
+
+        opt.step()
+        sched.step()
+        loss_history.append(float(loss.detach().cpu()))
+
+    with torch.no_grad():
+        prox_final = torch.sigmoid(param_logit)
+        if prox_final.numel() > n_budget:
+            thresh = torch.topk(prox_final, n_budget).values[-1].item()
+            keep = prox_final >= thresh
+        else:
+            keep = torch.ones(prox_final.numel(), dtype=torch.bool, device=dev)
+
+        prox_kept = prox_final * keep.float()
+        kept_total = prox_kept.sum().item() + 1e-10
+        scale = orig_total / kept_total
+        prox_out = (prox_kept * scale).cpu().numpy()
+
+        rows_idx_np = rows_idx.cpu().numpy()
+        cols_idx_np = cols_idx.cpu().numpy()
+        keep_np = keep.cpu().numpy()
+        rows_out = rows_idx_np[keep_np]
+        cols_out = cols_idx_np[keep_np]
+        prox_out = prox_out[keep_np]
+
+    if rows_out.size == 0:
         W_out = sparse.csr_matrix((n, n), dtype=float)
-        info: dict[str, Any] = {
-            "final_loss": float("nan"),
+        info = {
+            "final_loss": loss_history[-1] if loss_history else float("nan"),
             "edge_index": np.zeros((2, 0), dtype=np.int64),
-            "sum_orig": sum_orig,
+            "sum_orig": orig_total,
             "sum_sparse": 0.0,
             "t": t_use,
         }
         if return_history:
-            info["loss_history"] = []
+            info["loss_history"] = loss_history
         return W_out, info
 
-    if m > ei_np.size:
-        raise ValueError(f"m={m} exceeds number of candidate edges {ei_np.size}")
-
-    dev = torch.device(device or "cpu")
-    tor_dtype = dtype
-
-    ei = torch.from_numpy(ei_np).to(dev)
-    ej = torch.from_numpy(ej_np).to(dev)
-    E = ei.numel()
-
-    W_full_np = W_csr.toarray()
-    W_target = torch.tensor(W_full_np, dtype=tor_dtype, device=dev)
-    L_target = _laplacian(W_target)
-    with torch.no_grad():
-        H_target = torch.linalg.matrix_exp(-t_use * L_target)
-
-    sum_orig_t = torch.tensor(sum_orig, dtype=tor_dtype, device=dev)
-
-    g = torch.Generator(device=dev)
-    if rng_seed is not None:
-        g.manual_seed(int(rng_seed))
-    theta = torch.randn(E, dtype=tor_dtype, device=dev, generator=g) * 0.01
-    theta.requires_grad_(True)
-
-    opt = torch.optim.Adam([theta], lr=float(lr))
-
-    loss_history: list[float] = []
-    for _ in range(int(n_steps)):
-        opt.zero_grad(set_to_none=True)
-        pi = torch.sigmoid(theta)
-        w_edge = _ste_hard_topk_weights(pi, m, sum_orig_t)
-        W_s = _adjacency_from_upper_edges(n, ei, ej, w_edge)
-        L_s = _laplacian(W_s)
-        H_s = torch.linalg.matrix_exp(-t_use * L_s)
-        loss = ((torch.diag(H_target) - torch.diag(H_s)) ** 2).sum()
-        loss.backward()
-        opt.step()
-        loss_history.append(float(loss.detach().cpu()))
-
-    with torch.no_grad():
-        pi = torch.sigmoid(theta)
-        _, idx = torch.topk(pi, min(m, E))
-        w_hard = torch.zeros(E, dtype=tor_dtype, device=dev)
-        w_hard.scatter_(0, idx, pi[idx])
-        denom = w_hard.sum().clamp_min(torch.finfo(tor_dtype).eps)
-        scale = sum_orig_t / denom
-        w_final = w_hard * scale
-
-    w_np = w_final.cpu().numpy()
-    idx_np = idx.cpu().numpy()
-    sel_i = ei_np[idx_np]
-    sel_j = ej_np[idx_np]
-    w_sel = w_np[idx_np]
-
-    rows = np.concatenate([sel_i, sel_j])
-    cols = np.concatenate([sel_j, sel_i])
-    data = np.concatenate([w_sel, w_sel])
-    W_out = sparse.csr_matrix((data, (rows, cols)), shape=(n, n))
+    data_sym = np.concatenate([prox_out, prox_out])
+    rows_sym = np.concatenate([rows_out, cols_out])
+    cols_sym = np.concatenate([cols_out, rows_out])
+    W_out = sparse.csr_matrix((data_sym, (rows_sym, cols_sym)), shape=(n, n))
     W_out.eliminate_zeros()
 
     sum_sparse = float(sparse.triu(W_out, k=1).sum())
 
     info = {
         "final_loss": loss_history[-1] if loss_history else float("nan"),
-        "edge_index": np.stack([sel_i, sel_j], axis=0),
-        "sum_orig": sum_orig,
+        "edge_index": np.stack([rows_out, cols_out], axis=0),
+        "sum_orig": orig_total,
         "sum_sparse": sum_sparse,
         "t": t_use,
     }
