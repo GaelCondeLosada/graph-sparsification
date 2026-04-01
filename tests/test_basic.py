@@ -260,5 +260,50 @@ class TestCalibrateBeta:
         assert 'infection_prob' in info
 
 
+class TestHeatKernelGD:
+    def test_rescales_total_weight_and_runs(self):
+        pytest.importorskip("torch")
+        from graph_sparsification.heat_kernel_gd import heat_kernel_gd_sparsify
+
+        n = 8
+        rows, cols, data = [], [], []
+        for i in range(n - 1):
+            rows.append(i)
+            cols.append(i + 1)
+            data.append(0.5 + 0.1 * i)
+        rows_sym = rows + cols
+        cols_sym = cols + rows
+        data_sym = data + data
+        W = sparse.csr_matrix((data_sym, (rows_sym, cols_sym)), shape=(n, n))
+
+        m = 5
+        W_s, info = heat_kernel_gd_sparsify(
+            W,
+            m=m,
+            t=1.0,
+            n_steps=40,
+            lr=0.05,
+            rng_seed=0,
+            return_history=True,
+        )
+        assert W_s.shape == (n, n)
+        assert np.isfinite(info["final_loss"])
+        np.testing.assert_allclose(info["sum_sparse"], info["sum_orig"], rtol=1e-5, atol=1e-8)
+        assert sparse.triu(W_s, 1).nnz == m
+
+    def test_t_from_gamma_over_beta(self):
+        pytest.importorskip("torch")
+        from graph_sparsification.heat_kernel_gd import heat_kernel_gd_sparsify
+
+        n = 5
+        rows, cols, data = [0, 1], [1, 0], [0.5, 0.5]
+        W = sparse.csr_matrix((data, (rows, cols)), shape=(n, n))
+        W_s, info = heat_kernel_gd_sparsify(
+            W, m=1, beta=2.0, gamma=1.0, n_steps=2, rng_seed=0
+        )
+        assert info["t"] == 0.5
+        assert W_s.shape == (n, n)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

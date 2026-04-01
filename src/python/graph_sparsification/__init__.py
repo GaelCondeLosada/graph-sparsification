@@ -12,3 +12,8 @@ from .sparsifiers import (
 )
 from .sir import sir_simulation, sir_monte_carlo, calibrate_beta
 from .visualization import plot_adjacency_comparison, plot_infection_comparison
+
+try:
+    from .heat_kernel_gd import heat_kernel_gd_sparsify
+except ImportError:  # pragma: no cover
+    heat_kernel_gd_sparsify = None  # type: ignore[misc, assignment]
