@@ -10,3 +10,5 @@ build/
 .ipynb_checkpoints/
 *.ipynb_checkpoints
 .venv/
+
+desktop.ini
